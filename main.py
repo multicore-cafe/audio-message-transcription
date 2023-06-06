@@ -47,6 +47,8 @@ async def handle(file_ogg: str, log: Callable[[str], None]) -> str:
     await log("Text recognizing...")
     text = recognize(file_wav)
 
+    print(text)
+
     await log("Text sanitizing...")
     sanitized = sanitize(text)
 
