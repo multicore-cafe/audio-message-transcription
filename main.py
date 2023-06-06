@@ -63,12 +63,10 @@ def start_bot():
   async def handle_voice(client, message):
     try:
       file_ogg = await client.download_media(message.voice)
-      response = await message.reply("...")
-      async def log(message: str):
-        await response.edit_text("__" + message + "__")
-      await response.edit_text(await handle(file_ogg, log))
+      async def log(msg: str): await message.edit_text("__" + msg + "__")
+      await message.edit_text(await handle(file_ogg, log))
     except Exception as e:
-      response and await response.delete()
+      message.edit_text("")
       raise e
     finally:
       if os.path.exists(file_ogg):
