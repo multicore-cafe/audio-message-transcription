@@ -1,0 +1,6 @@
+*.session
+*.session-journal
+downloads/
+.env
+.DS_Store
+.vscode

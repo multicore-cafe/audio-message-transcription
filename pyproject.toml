@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "tg-bot-whisper"
+version = "0.1.0"
+description = ""
+authors = ["kana <andrew4chrome@gmail.com>"]
+packages = [{include = "tg_bot_whisper"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pyrogram = "^2.0.106"
+tgcrypto = "^1.2.5"
+pydub = "^0.25.1"
+openai = "^0.27.7"
+python-dotenv = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
