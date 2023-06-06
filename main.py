@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from typing import Callable
+from typing import Callable, Awaitable
 import os
 import openai
 
@@ -39,7 +39,7 @@ def sanitize(text: str) -> str:
   return completion.choices[0].message.content
 
 
-async def handle(file_ogg: str, log: Callable[[str], None]) -> str:
+async def handle(file_ogg: str, log: Callable[[str], Awaitable[None]]) -> str:
   file_wav = None
 
   try:
@@ -62,15 +62,19 @@ async def handle(file_ogg: str, log: Callable[[str], None]) -> str:
 
 def start_bot():
   from pyrogram import Client, filters
+  from pyrogram.types import Message
   from pyrogram.handlers import MessageHandler
 
-  async def handle_voice(client, message):
+  async def handle_voice(client: Client, message: Message):
     file_ogg = None
+
+    async def log(msg: str):
+      await message.edit_text("__" + msg + "__")
 
     try:
       file_ogg = await client.download_media(message.voice)
-      async def log(msg: str): await message.edit_text("__" + msg + "__")
-      await message.edit_text(await handle(file_ogg, log))
+      result = await handle(file_ogg, log)
+      await message.edit_text(result)
     except Exception as e:
       message.edit_text("")
       raise e
