@@ -40,6 +40,8 @@ def sanitize(text: str) -> str:
 
 
 async def handle(file_ogg: str, log: Callable[[str], None]) -> str:
+  file_wav = None
+
   try:
     await log("Downloading and converting...")
     file_wav = get_wav_file(file_ogg)
@@ -54,7 +56,7 @@ async def handle(file_ogg: str, log: Callable[[str], None]) -> str:
 
     return sanitized
   finally:
-    if os.path.exists(file_wav):
+    if file_wav and os.path.exists(file_wav):
       os.remove(file_wav)
 
 
@@ -63,6 +65,8 @@ def start_bot():
   from pyrogram.handlers import MessageHandler
 
   async def handle_voice(client, message):
+    file_ogg = None
+
     try:
       file_ogg = await client.download_media(message.voice)
       async def log(msg: str): await message.edit_text("__" + msg + "__")
@@ -71,7 +75,7 @@ def start_bot():
       message.edit_text("")
       raise e
     finally:
-      if os.path.exists(file_ogg):
+      if file_ogg and os.path.exists(file_ogg):
         os.remove(file_ogg)
 
   app = Client("text", os.getenv("TELEGRAM_API_ID"), os.getenv("TELEGRAM_API_HASH"))
