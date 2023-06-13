@@ -1,5 +1,5 @@
 1. install [`poetry`](https://python-poetry.org/docs/#installation)
-2. install ['ffmpeg`](https://ffmpeg.org/download.html)
+2. install [`ffmpeg`](https://ffmpeg.org/download.html)
 3. `cp .env.example .env`
 4. Fill `.env` file with values:
     - get `OPENAI_API_KEY` from https://platform.openai.com/account/api-keys
