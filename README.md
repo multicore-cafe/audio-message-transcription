@@ -4,4 +4,5 @@
 4. Fill `.env` file with values:
     - get `OPENAI_API_KEY` from https://platform.openai.com/account/api-keys
     - get `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` using https://core.telegram.org/api/obtaining_api_id
-5. `poetry run python main.py` and auth
+5. `poetry install`
+6. `poetry run python main.py` and auth

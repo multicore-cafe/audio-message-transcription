@@ -24,21 +24,6 @@ def recognize(file_wav: str) -> str:
   )
   return response
 
-
-def sanitize(text: str) -> str:
-  prompt = """
-    Remove parasite words from next message, do not change other words.
-    Do not change language.
-    Answer me just with santizied text.
-  """
-
-  completion = openai.ChatCompletion.create(
-    model="gpt-3.5-turbo",
-    messages=[{'role': 'system',  'content': prompt}, {'role': 'user', 'content': text}],
-  )
-  return completion.choices[0].message.content
-
-
 async def handle(file_ogg: str, log: Callable[[str], Awaitable[None]]) -> str:
   file_wav = None
 
@@ -49,12 +34,7 @@ async def handle(file_ogg: str, log: Callable[[str], Awaitable[None]]) -> str:
     await log("Text recognizing...")
     text = recognize(file_wav)
 
-    print(text)
-
-    await log("Text sanitizing...")
-    sanitized = sanitize(text)
-
-    return sanitized
+    return text
   finally:
     if file_wav and os.path.exists(file_wav):
       os.remove(file_wav)
