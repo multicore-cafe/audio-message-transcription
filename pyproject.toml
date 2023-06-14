@@ -6,7 +6,7 @@ authors = ["kana <andrew4chrome@gmail.com>"]
 packages = [{include = "tg_bot_whisper"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "^3.9"
 pyrogram = "^2.0.106"
 tgcrypto = "^1.2.5"
 pydub = "^0.25.1"
