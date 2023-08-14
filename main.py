@@ -21,6 +21,7 @@ def recognize(file_wav: str) -> str:
     model="whisper-1",
     file=open(file_wav, 'rb'),
     response_format='text',
+    prompt="Вот мой ответ. Он может быть на русском, or maybe english or a combination of both. Иногда английские слова могут встречаться в русском тексте, такие как usecases, language models, etc. Some text may also be adjusted muuuuch better match the intonation. It's reeeeaally convenient."
   )
   return response
 
