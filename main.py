@@ -8,37 +8,40 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
-def get_wav_file(file_ogg: str) -> str:
+TEN_MINUTES = 10 * 60 * 1000
+
+
+def get_mp3_file(file_ogg: str) -> str:
   from pydub import AudioSegment
-  file_wav = file_ogg.replace('.ogg','.wav')
-  x = AudioSegment.from_file(file_ogg)
-  x.export(file_wav, format='wav')
-  return file_wav
+  file_mp3 = file_ogg.replace(".ogg", ".mp3")
+  segment = AudioSegment.from_file(file_ogg)[:TEN_MINUTES]
+  segment.export(file_mp3, format="mp3")
+  return file_mp3
 
 
-def recognize(file_wav: str) -> str:
+def recognize(file_mp3: str) -> str:
   response = openai.Audio.transcribe(
     model="whisper-1",
-    file=open(file_wav, 'rb'),
+    file=open(file_mp3, 'rb'),
     response_format='text',
     prompt="Вот мой ответ. Он может быть на русском, or maybe english or a combination of both. Иногда английские слова могут встречаться в русском тексте, такие как usecases, language models, etc. Some text may also be adjusted muuuuch better match the intonation. It's reeeeaally convenient."
   )
   return response
 
 async def handle(file_ogg: str, log: Callable[[str], Awaitable[None]]) -> str:
-  file_wav = None
+  file_mp3 = None
 
   try:
     await log("Downloading and converting...")
-    file_wav = get_wav_file(file_ogg)
+    file_mp3 = get_mp3_file(file_ogg)
 
     await log("Text recognizing...")
-    text = recognize(file_wav)
+    text = recognize(file_mp3)
 
     return text
   finally:
-    if file_wav and os.path.exists(file_wav):
-      os.remove(file_wav)
+    if file_mp3 and os.path.exists(file_mp3):
+      os.remove(file_mp3)
 
 
 def start_bot():
