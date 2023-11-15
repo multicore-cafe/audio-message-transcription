@@ -1,0 +1,10 @@
+version: "3.91"
+
+services:
+  slack:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m slack
+    ports:
+      - "3002:3002"
