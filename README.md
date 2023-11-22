@@ -8,4 +8,4 @@
     - get `SLACK_TOKEN` from OAuth & Permissions tab of https://api.slack.com/apps
     - get `SLACK_SIGNING_SECRET` from Basic Information tab of https://api.slack.com/apps
 5. `poetry install`
-6. Telegram bot: `poetry run python main.py` and auth; Slack bot: `poetry run python slack.py`
+6. Telegram bot: `poetry run python app/tg.py` and auth; Slack bot: `poetry run python app/slack.py`

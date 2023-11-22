@@ -5,6 +5,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m slack
+    command: python -m app.slack
     ports:
       - "3002:3002"
+    volumes:
+      - ./app:/app/app
+      - ./data/sqlite3:/app/data/sqlite3
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn --host 0.0.0.0 --port 3003 app.api:api
+    env_file: .env
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./app:/app/app
+      - ./data/sqlite3:/app/data/sqlite3

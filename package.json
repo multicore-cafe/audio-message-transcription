@@ -1,0 +1,7 @@
+{
+  "name": "voice-sanitizer",
+  "main": "api-proxy.js",
+  "dependencies": {
+    "http-proxy": "^1.18.1"
+  }
+}

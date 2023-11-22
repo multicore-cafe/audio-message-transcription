@@ -1,16 +1,18 @@
 import os
 import logging
-from typing import final
 import requests
+import sqlite3
 import tempfile
-import time
 
 from dotenv import load_dotenv
+from moviepy.editor import AudioFileClip
 import ngrok
 import openai
-from moviepy.editor import AudioFileClip
 from slack_bolt.async_app import AsyncApp
+from slack_bolt.oauth.async_oauth_settings import AsyncOAuthSettings
 from slack_sdk.web.async_client import AsyncWebClient
+from slack_sdk.oauth.state_store.sqlite3 import SQLite3OAuthStateStore
+from slack_sdk.oauth.installation_store.sqlite3 import SQLite3InstallationStore
 
 TEN_MINUTES = 10 * 60 * 1000
 
@@ -33,10 +35,25 @@ def recognize(file_mp3: str) -> str:
   return response   # type: ignore
 
 def create_app() -> AsyncApp:
+    slack_client_id = os.getenv("SLACK_CLIENT_ID")
+    slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
     slack_token = os.getenv("SLACK_TOKEN")
     slack_signing_secret = os.getenv("SLACK_SIGNING_SECRET")
 
-    app = AsyncApp(token=slack_token, signing_secret=slack_signing_secret)
+    assert slack_client_id is not None
+
+    sqlite3.connect("./data/sqlite3/database.db").close()
+
+    oauth_settings = AsyncOAuthSettings(
+        client_id=slack_client_id,
+        client_secret=slack_client_secret,
+        scopes=["im:history", "im:write", "im:read", "channels:history", "chat:write", "groups:history", "groups:write", "files:read", "files:write", "team:read"],
+        redirect_uri=os.getenv("REDIRECT_URI"),
+        installation_store = SQLite3InstallationStore(database="./data/sqlite3/database.db", client_id=slack_client_id),
+        state_store = SQLite3OAuthStateStore(database="./data/sqlite3/database.db", expiration_seconds=120)
+    )
+
+    app = AsyncApp(signing_secret=slack_signing_secret, oauth_settings=oauth_settings)
 
     @app.event("message")
     async def message_handler(event, client: AsyncWebClient):
@@ -46,7 +63,7 @@ def create_app() -> AsyncApp:
 
         for file in files:
             if file["subtype"] == "slack_audio":
-                response = requests.get(file["aac"], headers={"Authorization": f"Bearer {slack_token}", "Accept": "video/mp4"})
+                response = requests.get(file["aac"], headers={"Authorization": f"Bearer {client.token}", "Accept": "video/mp4"})
                 mp3_file = None
                 try:
                     with tempfile.NamedTemporaryFile("wb", suffix=".mp4") as f:
@@ -60,14 +77,19 @@ def create_app() -> AsyncApp:
 
     return app
 
-load_dotenv()
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-openai.organization = os.getenv("OPENAI_ORGANIZATION")
+if __name__ == "__main__":
+    load_dotenv()
 
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
-logger.addHandler(logging.StreamHandler())
-app = create_app()
-tunnel = ngrok.connect("localhost:3002", domain="rare-bullfrog-pleasantly.ngrok-free.app", authtoken=os.getenv("NGROK_TOKEN"))
-app.start(3002)
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+    openai.organization = os.getenv("OPENAI_ORGANIZATION")
+
+    ngrok_enabled = os.getenv("NGROK_ENABLED") == "true"
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+    app = create_app()
+    if ngrok_enabled:
+        tunnel = ngrok.connect("localhost:3002", domain="rare-bullfrog-pleasantly.ngrok-free.app", authtoken=os.getenv("NGROK_TOKEN"))
+    app.start(3002)
