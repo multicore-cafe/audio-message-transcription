@@ -91,5 +91,5 @@ if __name__ == "__main__":
     logger.addHandler(logging.StreamHandler())
     app = create_app()
     if ngrok_enabled:
-        tunnel = ngrok.connect("localhost:3002", domain="rare-bullfrog-pleasantly.ngrok-free.app", authtoken=os.getenv("NGROK_TOKEN"))
+        tunnel = ngrok.connect("localhost:3002", domain=os.getenv("NGROK_DOMAIN"), authtoken=os.getenv("NGROK_TOKEN"))
     app.start(3002)
