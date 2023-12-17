@@ -37,7 +37,6 @@ def recognize(file_mp3: str) -> str:
 def create_app() -> AsyncApp:
     slack_client_id = os.getenv("SLACK_CLIENT_ID")
     slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
-    slack_token = os.getenv("SLACK_TOKEN")
     slack_signing_secret = os.getenv("SLACK_SIGNING_SECRET")
 
     assert slack_client_id is not None
