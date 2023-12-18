@@ -47,7 +47,6 @@ def create_app() -> AsyncApp:
         client_id=slack_client_id,
         client_secret=slack_client_secret,
         scopes=["im:history", "mpim:history", "channels:history", "groups:history"],
-        redirect_uri=os.getenv("REDIRECT_URI"),
         installation_store = SQLite3InstallationStore(database="./data/sqlite3/database.db", client_id=slack_client_id),
         state_store = SQLite3OAuthStateStore(database="./data/sqlite3/database.db", expiration_seconds=120)
     )
