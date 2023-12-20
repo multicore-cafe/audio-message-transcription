@@ -46,7 +46,7 @@ def create_app() -> AsyncApp:
     oauth_settings = AsyncOAuthSettings(
         client_id=slack_client_id,
         client_secret=slack_client_secret,
-        scopes=["im:history", "mpim:history", "channels:history", "groups:history"],
+        scopes=["im:history", "mpim:history", "channels:history", "groups:history", "files:read", "chat:write"],
         installation_store = SQLite3InstallationStore(database="./data/sqlite3/database.db", client_id=slack_client_id),
         state_store = SQLite3OAuthStateStore(database="./data/sqlite3/database.db", expiration_seconds=120)
     )
