@@ -11,3 +11,42 @@ services:
     volumes:
       - ./app:/app/app
       - ./data/sqlite3:/app/data/sqlite3
+    depends_on:  # TODO: make slack service start after payments backend is ready to accept connections (currently it does work this way not)
+      nginx:
+        condition: service_started
+      backend:
+        condition: service_started
+      
+
+  backend:
+    build:
+      context: ./tentakel-payments/
+    # ports:  # TODO: close me
+      # - "3443:3443"
+    env_file: ./tentakel-payments/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16.1
+    restart: always
+    volumes:
+      - ./tentakel-payments/data:/var/lib/postgresql/data:cached
+    env_file:
+      - ./tentakel-payments/.env
+    # ports:  # TODO: close me
+      # - "5432:5432"
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 3s
+      timeout: 2s
+      retries: 3
+
+  nginx:
+    image: nginx:1.25.3
+    restart: always
+    ports:
+      - "3553:80"
+    volumes:
+      - ./tentakel-payments/nginx.conf:/etc/nginx/nginx.conf:ro

@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import sqlite3
+import json
 import tempfile
 
 from dotenv import load_dotenv
@@ -34,6 +35,37 @@ def recognize(file_mp3: str) -> str:
   )
   return response   # type: ignore
 
+
+def is_subscription_active(user_id: str, team_id: str):
+    assert user_id is not None
+    assert team_id is not None
+    identifying_metadata = {"user_id": user_id, "team_id": team_id}
+
+    response = requests.get("http://backend:3443/api/v1/subscriptions", params={"metadata": json.dumps(identifying_metadata)})
+
+    return response.status_code == 200 and response.json()["status"] == "active"
+
+
+def get_subscription_payment_link(user_id: str, team_id: str) -> str:
+    assert user_id is not None
+    assert team_id is not None
+    identifying_metadata = {"user_id": user_id, "team_id": team_id}
+
+    response = requests.post(
+        "http://backend:3443/api/v1/subscriptions/checkout", 
+        json={  # TODO: custom success and cancel urls
+            "metadata": identifying_metadata,
+            "successUrl": "https://google.com",
+            "cancelUrl": "https://yandex.com"
+        },
+    )
+
+    if response.status_code != 201:
+        raise Exception("Something went wrong when processing when creating a payment link. Response: ", response.json(), response.status_code)
+
+    return response.json()["checkoutUrl"]
+
+
 def create_app() -> AsyncApp:
     slack_client_id = os.getenv("SLACK_CLIENT_ID")
     slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
@@ -58,20 +90,26 @@ def create_app() -> AsyncApp:
         channel_id = event["channel"]
         files = event.get("files", [])
         ts = event["ts"]
-
+        user_id = event["user"]
+        
         for file in files:
             if file["subtype"] == "slack_audio":
-                response = requests.get(file["aac"], headers={"Authorization": f"Bearer {client.token}", "Accept": "video/mp4"})
-                mp3_file = None
-                try:
-                    with tempfile.NamedTemporaryFile("wb", suffix=".mp4") as f:
-                        f.write(response.content)
-                        mp3_file = get_mp3_file(f.name)
-                        text = recognize(mp3_file)
-                    await client.chat_postMessage(channel=channel_id, thread_ts=ts, text=f"_{text.strip()}_", mrkdwn=True)
-                finally:
-                    if mp3_file and os.path.exists(mp3_file):
-                        os.remove(mp3_file)
+                team_id = event["team"] if "team" in event else file["user_team"]
+                if is_subscription_active(user_id, team_id):
+                    response = requests.get(file["aac"], headers={"Authorization": f"Bearer {client.token}", "Accept": "video/mp4"})
+                    mp3_file = None
+                    try:
+                        with tempfile.NamedTemporaryFile("wb", suffix=".mp4") as f:
+                            f.write(response.content)
+                            mp3_file = get_mp3_file(f.name)
+                            text = recognize(mp3_file)
+                        await client.chat_postMessage(channel=channel_id, thread_ts=ts, text=f"_{text.strip()}_", mrkdwn=True)
+                    finally:
+                        if mp3_file and os.path.exists(mp3_file):
+                            os.remove(mp3_file)
+                else:
+                    # TODO: send a message to the chat with user instead?
+                    await client.chat_postEphemeral(channel=channel_id, user=user_id, text=f"Your subscription is not active, <{get_subscription_payment_link(user_id, team_id)}|click here to renew> ", mrkdwn=True)
 
     return app
 
