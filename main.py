@@ -48,6 +48,7 @@ def start_bot():
   from pyrogram import Client, filters
   from pyrogram.types import Message
   from pyrogram.handlers import MessageHandler
+  from pyrogram.errors.exceptions import MediaCaptionTooLong
 
   async def handle_voice(client: Client, message: Message):
     file_ogg = None
@@ -59,6 +60,9 @@ def start_bot():
       file_ogg = await client.download_media(message.voice)
       result = await handle(file_ogg, log)
       await message.edit_text(result)
+    except MediaCaptionTooLong as e:
+      await message.edit_text("__See transcription below__")
+      await message.reply(text=result)
     except Exception as e:
       message.edit_text("")
       raise e
