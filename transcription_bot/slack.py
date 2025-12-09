@@ -8,13 +8,19 @@ from dotenv import load_dotenv
 from moviepy.editor import AudioFileClip
 import ngrok
 import openai
+from openai import OpenAI
+
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.oauth.async_oauth_settings import AsyncOAuthSettings
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.oauth.state_store.sqlite3 import SQLite3OAuthStateStore
 from slack_sdk.oauth.installation_store.sqlite3 import SQLite3InstallationStore
 
+load_dotenv()
+
 TEN_MINUTES = 10 * 60 * 1000
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_mp3_file(file_mp4: str) -> str:
     file_mp3 = file_mp4.replace(".mp4", ".mp3")
@@ -26,7 +32,7 @@ def get_mp3_file(file_mp4: str) -> str:
 
 
 def recognize(file_mp3: str) -> str:
-  response = openai.Audio.transcribe(
+  response = client.audio.transcriptions.create(
     model="whisper-1",
     file=open(file_mp3, "rb"),
     response_format="text",
@@ -81,8 +87,8 @@ def create_app() -> AsyncApp:
 if __name__ == "__main__":
     load_dotenv()
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    openai.organization = os.getenv("OPENAI_ORGANIZATION")
+    # TODO: The 'openai.organization' option isn't read in the client API. You will need to pass it when you instantiate the client, e.g. 'OpenAI(organization=os.getenv("OPENAI_ORGANIZATION"))'
+    # openai.organization = os.getenv("OPENAI_ORGANIZATION")
 
     ngrok_enabled = os.getenv("NGROK_ENABLED") == "true"
 

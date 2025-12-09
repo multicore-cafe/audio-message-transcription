@@ -1,11 +1,11 @@
 from dotenv import load_dotenv
 from typing import Callable, Awaitable
 import os
-import openai
-
+from openai import OpenAI
 
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 TEN_MINUTES = 10 * 60 * 1000
@@ -20,7 +20,7 @@ def get_mp3_file(file_ogg: str) -> str:
 
 
 def recognize(file_mp3: str) -> str:
-  response = openai.Audio.transcribe(
+  response = client.audio.transcriptions.create(
     model="whisper-1",
     file=open(file_mp3, 'rb'),
     response_format='text',
