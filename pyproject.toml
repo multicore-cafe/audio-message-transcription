@@ -1,28 +1,36 @@
 [tool.poetry]
-name = "tg-bot-whisper"
+name = "transcription-bot"
 version = "0.1.0"
 description = ""
-authors = ["kana <andrew4chrome@gmail.com>"]
-packages = [{include = "tg_bot_whisper"}]
+authors = [
+    "kana <andrew4chrome@gmail.com>",
+]
+packages = [
+    { include = "transcription_bot" },
+]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.12"
+
 pyrogram = "^2.0.106"
 tgcrypto = "^1.2.5"
 pydub = "^0.25.1"
-openai = "^0.27.7"
-python-dotenv = "^1.0.0"
-slack-sdk = "^3.23.0"
-slack-bolt = "^1.18.0"
-ngrok = "^0.12.0"
-moviepy = "^1.0.3"
-fastapi = "^0.104.1"
-uvicorn = "^0.24.0.post1"
-sqlalchemy = "^2.0.23"
-alembic = "^1.12.1"
-asyncpg = "^0.29.0"
-psycopg2-binary = "^2.9.9"
+openai = "^2.9.0"
+python-dotenv = "^1.2.1"
+slack-sdk = "^3.39.0"
+slack-bolt = "^1.27.0"
+ngrok = "^1.4.0"
+moviepy = "^2.2.1"
+fastapi = "^0.124.0"
+uvicorn = "^0.38.0"
+sqlalchemy = "^2.0.44"
+alembic = "^1.16.5"
+asyncpg = "^0.31.0"
+psycopg2-binary = "^2.9.11"
+
 
 [build-system]
-requires = ["poetry-core"]
+requires = [
+    "poetry-core",
+]
 build-backend = "poetry.core.masonry.api"
