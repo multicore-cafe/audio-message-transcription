@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Iterator
 
-from telethon import TelegramClient, errors, events, functions, types
+from telethon import TelegramClient, errors, events, functions, types, utils
 
 from .config import TelegramSettings
 from .errors import CaptionTooLong, FatalError, FloodWait, PermanentError, TransientError
-from .processor import VoiceMessage
+from .processor import STATUS_MARKERS, VoiceMessage
 
 log = logging.getLogger(__name__)
+
+CONNECTION_RETRIES = 5
+RETRY_DELAY = 5
+REQUEST_TIMEOUT = 30
+STARTUP_TIMEOUT = 60
+SWEEP_PAGE_SIZE = 100
+SWEEP_MAX_PAGES = 20
 
 
 def create_client(
@@ -30,9 +39,9 @@ def create_client(
         str(settings.session_path),
         settings.api_id,
         settings.api_hash,
-        timeout=settings.request_timeout,
-        connection_retries=settings.connection_retries,
-        retry_delay=settings.retry_delay,
+        timeout=REQUEST_TIMEOUT,
+        connection_retries=CONNECTION_RETRIES,
+        retry_delay=RETRY_DELAY,
         auto_reconnect=True,
         catch_up=catch_up,
         receive_updates=receive_updates,
@@ -47,11 +56,40 @@ def login_hint(settings: TelegramSettings) -> str:
     )
 
 
-async def connect_authorized(client: TelegramClient, settings: TelegramSettings) -> None:
-    """Connect and make sure the session is logged in; raises FatalError otherwise."""
+async def connect_authorized(client: TelegramClient, hint: str) -> None:
+    """Connect and make sure the session is logged in; raises FatalError with `hint` otherwise.
+
+    Other errors (network, Telegram server errors, flood waits) propagate: they are not a reason to
+    log in again. (`client.is_user_authorized()` would report them as "not logged in".)
+    """
+    if client.session.auth_key is None:
+        raise FatalError(hint)  # no session yet: no need to contact Telegram at all
     await client.connect()
-    if not await client.is_user_authorized():
-        raise FatalError(login_hint(settings))
+    try:
+        await client(functions.updates.GetStateRequest())
+    except (errors.UnauthorizedError, errors.AuthKeyError) as exc:
+        raise FatalError(f"{hint} ({exc.__class__.__name__})") from exc
+    client._authorized = True  # what is_user_authorized() would have cached
+
+
+@contextmanager
+def session_lock(settings: TelegramSettings) -> Iterator[None]:
+    """Hold an exclusive lock next to the session file, so two processes never share one session.
+
+    Telegram may invalidate a session (AUTH_KEY_DUPLICATED) used by two connections at once.
+    Raises FatalError if another process holds the lock, OSError if the file cannot be created.
+    """
+    path = settings.session_path.with_name(settings.session_path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise FatalError(
+                f"another instance is running with the session {settings.session_path} (lock file {path}); "
+                "stop it first"
+            ) from None
+        yield
 
 
 async def check_connection(client: TelegramClient) -> None:
@@ -85,13 +123,44 @@ def translate_errors() -> Iterator[None]:
 
 
 def is_owner_voice(message: types.Message) -> bool:
-    """An outgoing (sent by the account owner from any device) voice note."""
-    return bool(message.out and message.voice)
+    """A voice note recorded by the account owner (outgoing from any device, not forwarded)."""
+    return bool(message.out and message.voice and not message.fwd_from)
 
 
 def owner_voice_event() -> events.NewMessage:
     """New voice messages sent by the account owner (from any of their devices)."""
     return events.NewMessage(outgoing=True, func=lambda event: is_owner_voice(event.message))
+
+
+async def find_untranscribed(client: TelegramClient, since: datetime) -> list[tuple[int, int]]:
+    """(chat_id, message_id) of the owner's voice notes since `since` that have no transcription yet.
+
+    One `messages.searchGlobal` with the voice filter covers private chats, groups, supergroups and
+    channels (not secret chats). It cannot filter by sender, so outgoing messages are picked here.
+    """
+    found: list[tuple[int, int]] = []
+    offset_rate, offset_peer, offset_id = 0, types.InputPeerEmpty(), 0
+    for _ in range(SWEEP_MAX_PAGES):
+        result = await client(functions.messages.SearchGlobalRequest(
+            q="", filter=types.InputMessagesFilterVoice(), min_date=since, max_date=None,
+            offset_rate=offset_rate, offset_peer=offset_peer, offset_id=offset_id, limit=SWEEP_PAGE_SIZE,
+        ))
+        messages = [m for m in result.messages if isinstance(m, types.Message)]
+        for message in messages:
+            if is_owner_voice(message) and (not message.message or message.message in STATUS_MARKERS):
+                found.append((utils.get_peer_id(message.peer_id), message.id))
+        if len(result.messages) < SWEEP_PAGE_SIZE or not messages:
+            return found
+        last = messages[-1]
+        entities = {utils.get_peer_id(x): x for x in [*result.users, *result.chats]}
+        peer = entities.get(utils.get_peer_id(last.peer_id))
+        if peer is None:
+            log.warning("startup sweep: cannot page past chat %s; older voice messages were not checked", last.peer_id)
+            return found
+        offset_rate = getattr(result, "next_rate", None) or int(last.date.timestamp())
+        offset_peer, offset_id = utils.get_input_peer(peer), last.id
+    log.warning("startup sweep: stopped after %d pages; older voice messages were not checked", SWEEP_MAX_PAGES)
+    return found
 
 
 class TelethonOps:

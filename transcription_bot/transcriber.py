@@ -12,26 +12,30 @@ PROMPT = (
     "Some text may also be adjusted muuuuch better match the intonation. It's reeeeaally convenient."
 )
 
-# Upload limit of the OpenAI transcription endpoint.
+# Upload limit of the OpenAI transcription endpoint (checked by the processor before downloading).
 MAX_FILE_SIZE = 25 * 1024 * 1024
 TOO_LARGE_NOTE = "voice message is larger than 25 MB"
+OPENAI_TIMEOUT = 300
 
 
-def create_openai_client(api_key: str, organization: str | None, timeout: float) -> openai.AsyncOpenAI:
+def create_openai_client(api_key: str, organization: str | None, timeout: float = OPENAI_TIMEOUT) -> openai.AsyncOpenAI:
     """Retries are done by the processor, so the SDK's own retries are off. OPENAI_BASE_URL is read by the SDK."""
     return openai.AsyncOpenAI(api_key=api_key, organization=organization, timeout=timeout, max_retries=0)
 
 
 def classify_openai_error(exc: openai.OpenAIError) -> Exception:
+    """Outages and account problems (key, billing, quota) are retried; the message itself is fine."""
     if isinstance(exc, openai.APIConnectionError):  # includes timeouts
         return TransientError(f"OpenAI connection error: {exc}")
     if isinstance(exc, openai.RateLimitError):
         if exc.code == "insufficient_quota":
-            return PermanentError("OpenAI quota exceeded")
+            return TransientError("OpenAI quota exceeded")
         return TransientError("OpenAI rate limit")
     if isinstance(exc, openai.APIStatusError):
         if exc.status_code >= 500 or exc.status_code in (408, 409):
             return TransientError(f"OpenAI server error {exc.status_code}")
+        if exc.status_code in (401, 403):
+            return TransientError(f"OpenAI rejected the API key or account ({exc.status_code})")
         return PermanentError(f"OpenAI error {exc.status_code}")
     return PermanentError(f"OpenAI error: {type(exc).__name__}")
 
@@ -44,8 +48,6 @@ class Transcriber:
 
     async def transcribe(self, audio: bytes) -> str:
         """Transcribe OGG/Opus bytes as Telegram stores voice messages."""
-        if len(audio) > MAX_FILE_SIZE:
-            raise PermanentError(TOO_LARGE_NOTE)
         try:
             result = await self._client.audio.transcriptions.create(
                 model=self._model,

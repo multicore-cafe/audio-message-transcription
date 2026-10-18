@@ -6,13 +6,15 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sqlite3
 
 import uvicorn
+from telethon import errors
 
-from ..app import EXIT_CONFIG, EXIT_FAILURE, EXIT_OK
+from ..app import EXIT_CONFIG, EXIT_FAILURE, EXIT_OK, interactive_login, report_file_error
 from ..config import TelegramSettings
 from ..errors import FatalError
-from ..telegram import check_connection, create_client
+from ..telegram import STARTUP_TIMEOUT, check_connection, connect_authorized, create_client, session_lock
 from ..watchdog import Watchdog
 from .config import McpSettings
 from .export import Exporter
@@ -47,47 +49,54 @@ class _Server(uvicorn.Server):
 
 
 async def serve(settings: McpSettings) -> int:
-    try:
-        client = create_readonly_client(settings.telegram)
-    except OSError as exc:
-        log.error("cannot open the session in %s: %s (it must exist and be writable by the container user)",
-                  settings.telegram.session_path.parent, exc)
-        return EXIT_CONFIG
-    client.flood_sleep_threshold = settings.flood_sleep_threshold
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(session_lock(settings.telegram))
+            client = create_readonly_client(settings.telegram)
+        except (FatalError, OSError, sqlite3.Error) as exc:
+            return report_file_error(exc, settings.telegram.session_path.parent)
+        return await _serve(settings, client)
 
+
+async def _serve(settings: McpSettings, client: ReadOnlyTelegramClient) -> int:
+    client.flood_sleep_threshold = settings.flood_sleep_threshold
     try:
-        if client.session.auth_key is None:
-            # No session yet: say how to log in without contacting Telegram at all.
-            raise FatalError(login_hint(settings.telegram))
-        await client.connect()
-        if not await client.is_user_authorized():
-            raise FatalError(login_hint(settings.telegram))
+        await asyncio.wait_for(connect_authorized(client, login_hint(settings.telegram)), STARTUP_TIMEOUT)
     except FatalError as exc:
         log.error("%s", exc)
         await client.disconnect()
         return EXIT_CONFIG
-    except (OSError, asyncio.TimeoutError) as exc:
+    except (OSError, TimeoutError, errors.RPCError) as exc:
         log.error("cannot connect to Telegram: %r", exc)
+        await client.disconnect()
         return EXIT_FAILURE
 
     reader = TelegramReader(client, max_response_chars=settings.max_response_chars,
                             dialog_cache_seconds=settings.dialog_cache_seconds)
     exporter = Exporter(reader, settings.export_dir, settings.export_host_dir,
-                        max_messages=settings.export_max_messages, media_max_bytes=settings.media_max_bytes)
-    me = await reader.me()
+                        max_messages=settings.export_max_messages, media_max_bytes=settings.media_max_bytes,
+                        media_max_total_bytes=settings.media_max_total_bytes)
+    try:
+        me = await asyncio.wait_for(reader.me(), STARTUP_TIMEOUT)
+    except (OSError, TimeoutError, errors.RPCError) as exc:
+        log.error("cannot connect to Telegram: %r", exc)
+        await client.disconnect()
+        return EXIT_FAILURE
     log.info("logged in as %s (id %s); read-only MCP server on http://%s:%d/mcp",
              me.username or me.first_name, me.id, settings.host, settings.port)
 
+    if not settings.auth_token:
+        log.warning("MCP_AUTH_TOKEN is not set: any local process that can reach port %d can read the account",
+                    settings.port)
     app = http_app(build_server(reader, exporter), allowed_hosts=settings.allowed_hosts,
-                   allowed_origins=settings.allowed_origins)
+                   allowed_origins=settings.allowed_origins, auth_token=settings.auth_token)
     server = _Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info",
                                     access_log=False, lifespan="on"))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    watchdog = Watchdog(lambda: check_connection(client), interval=settings.watchdog_interval,
-                        timeout=settings.watchdog_timeout, max_failures=settings.watchdog_max_failures)
+    watchdog = Watchdog(lambda: check_connection(client))
 
     tasks = {
         "server": asyncio.ensure_future(server.serve()),
@@ -124,9 +133,4 @@ async def serve(settings: McpSettings) -> int:
 
 async def login(settings: TelegramSettings) -> int:
     """Interactive login that creates the MCP server's own session file."""
-    client = create_readonly_client(settings, allow_login=True)
-    await client.start()
-    me = await client.get_me()
-    print(f"Logged in as {me.username or me.first_name} (id {me.id}); session saved to {settings.session_path}")
-    await client.disconnect()
-    return EXIT_OK
+    return await interactive_login(settings, lambda: create_readonly_client(settings, allow_login=True))

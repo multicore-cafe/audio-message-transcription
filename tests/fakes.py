@@ -15,8 +15,8 @@ class FakeTelegram:
         self.edits: list[tuple[tuple[int, int], str, bool]] = []
         self.replies: list[tuple[tuple[int, int], str]] = []
         self.downloads = 0
-        # Exceptions raised by the next calls of an operation, in order.
-        self.errors: dict[str, list[BaseException]] = {}
+        # Exceptions raised by the next calls of an operation, in order; `None` lets that call succeed.
+        self.errors: dict[str, list[BaseException | None]] = {}
 
     def add_voice(self, chat_id: int, message_id: int, caption: str = "", size: int = 1000) -> None:
         self.messages[(chat_id, message_id)] = VoiceMessage(chat_id, message_id, caption, size)
@@ -27,7 +27,9 @@ class FakeTelegram:
     def _maybe_fail(self, op: str) -> None:
         pending = self.errors.get(op)
         if pending:
-            raise pending.pop(0)
+            error = pending.pop(0)
+            if error is not None:
+                raise error
 
     async def fetch(self, chat_id, message_id):
         self._maybe_fail("fetch")

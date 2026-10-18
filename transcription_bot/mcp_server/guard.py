@@ -27,8 +27,11 @@ from telethon.network import MTProtoSender
 log = logging.getLogger(__name__)
 
 
-class ReadOnlyViolation(PermissionError):
-    """A request that could change the account (or mark something as read) was blocked."""
+class ReadOnlyViolation(RuntimeError):
+    """A request that could change the account (or mark something as read) was blocked.
+
+    Not an `OSError`, so network error handlers (ours and Telethon's) never mistake it for an outage.
+    """
 
 
 # Requests whose only purpose is to carry another request; the inner `query` is checked.
@@ -60,6 +63,8 @@ READ_ONLY_REQUESTS: frozenset[type] = frozenset({
     functions.messages.GetFullChatRequest,
     functions.channels.GetChannelsRequest,
     functions.channels.GetFullChannelRequest,
+    # Default notification settings per chat type (users, groups, channels), for "muted".
+    functions.account.GetNotifySettingsRequest,
     # Dialogs, folders and forum topics.
     functions.messages.GetDialogsRequest,
     functions.messages.GetPeerDialogsRequest,

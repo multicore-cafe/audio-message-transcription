@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx2
 import pytest
-from telethon import functions
+from telethon import errors, functions, types
 
 from tests.mcp_fakes import FakeTelegramClient, user
 from tests.test_mcp_server import HEADERS, INITIALIZE
@@ -92,8 +92,9 @@ async def test_serve_with_revoked_session_explains_how_to_log_in(tmp_path, caplo
         async def connect(self):
             self.connected = True
 
-        async def is_user_authorized(self):
-            return False
+        async def __call__(self, request):
+            assert isinstance(request, functions.updates.GetStateRequest)
+            raise errors.AuthKeyUnregisteredError(request)
 
         async def disconnect(self):
             self.disconnected = True
@@ -121,8 +122,8 @@ class AuthorizedClient(FakeTelegramClient):
     async def connect(self):
         pass
 
-    async def is_user_authorized(self):
-        return True
+    def _GetStateRequest(self, request):
+        return types.updates.State(pts=1, qts=0, date=None, seq=0, unread_count=0)
 
     def is_connected(self):
         return not self.closed

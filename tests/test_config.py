@@ -28,8 +28,6 @@ def test_missing_variable_is_named(missing):
         BotSettings.from_env(env)
 
 
-def test_invalid_numbers():
+def test_invalid_api_id():
     with pytest.raises(ConfigError, match="TELEGRAM_API_ID"):
         BotSettings.from_env({**ENV, "TELEGRAM_API_ID": "abc"})
-    with pytest.raises(ConfigError, match="MAX_ATTEMPTS"):
-        BotSettings.from_env({**ENV, "MAX_ATTEMPTS": "many"})

@@ -12,6 +12,7 @@ from ..config import ConfigError, TelegramSettings, _get, _number
 DEFAULT_PORT = 8790
 DEFAULT_SESSION = "telegram_mcp"
 BOT_DEFAULT_SESSION = "transcription_bot"
+MB = 1024 * 1024
 
 
 def _list(env: Mapping[str, str], name: str) -> list[str]:
@@ -29,12 +30,11 @@ class McpSettings:
     export_host_dir: Path
     export_max_messages: int
     media_max_bytes: int
+    media_max_total_bytes: int
     max_response_chars: int
     dialog_cache_seconds: float
     flood_sleep_threshold: int
-    watchdog_interval: float
-    watchdog_timeout: float
-    watchdog_max_failures: int
+    auth_token: str | None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> McpSettings:
@@ -55,16 +55,15 @@ class McpSettings:
             export_dir=export_dir,
             export_host_dir=Path(_get(env, "MCP_EXPORT_HOST_DIR") or export_dir.absolute()),
             export_max_messages=_number(env, "MCP_EXPORT_MAX_MESSAGES", 50_000),
-            media_max_bytes=int(_number(env, "MCP_MEDIA_MAX_MB", 50, float) * 1024 * 1024),
+            media_max_bytes=int(_number(env, "MCP_MEDIA_MAX_MB", 50, float) * MB),
+            media_max_total_bytes=int(_number(env, "MCP_EXPORT_MAX_TOTAL_MB", 1000, float) * MB),
             max_response_chars=_number(env, "MCP_MAX_RESPONSE_CHARS", 60_000),
             dialog_cache_seconds=_number(env, "MCP_DIALOG_CACHE_SECONDS", 60, float),
             flood_sleep_threshold=_number(env, "MCP_FLOOD_SLEEP_THRESHOLD", 30),
-            watchdog_interval=_number(env, "WATCHDOG_INTERVAL", 60, float),
-            watchdog_timeout=_number(env, "WATCHDOG_TIMEOUT", 30, float),
-            watchdog_max_failures=_number(env, "WATCHDOG_MAX_FAILURES", 3),
+            auth_token=_get(env, "MCP_AUTH_TOKEN") or None,
         )
         if not 0 < settings.port < 65536:
             raise ConfigError(f"MCP_PORT must be a TCP port, got {settings.port}")
-        if settings.export_max_messages < 1 or settings.max_response_chars < 1000 or settings.watchdog_max_failures < 1:
-            raise ConfigError("MCP_EXPORT_MAX_MESSAGES, MCP_MAX_RESPONSE_CHARS (>= 1000) and WATCHDOG_MAX_FAILURES are too small")
+        if settings.export_max_messages < 1 or settings.max_response_chars < 1000:
+            raise ConfigError("MCP_EXPORT_MAX_MESSAGES or MCP_MAX_RESPONSE_CHARS (>= 1000) is too small")
         return settings

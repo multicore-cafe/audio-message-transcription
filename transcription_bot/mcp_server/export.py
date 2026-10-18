@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from .serialize import entity_ref, iso, message_dict
 
 FORMATS = ("json", "markdown", "both")
 DEFAULT_MAX_MESSAGES = 10_000
+# One call stops after this long and returns a partial export (MCP clients time out tool calls).
+TIME_BUDGET = 50
 
 
 def _slug(name: str) -> str:
@@ -37,7 +40,9 @@ def markdown(chat: dict[str, Any], meta: dict[str, Any], items: list[dict[str, A
         f"- Exported: {meta['exported_at']}",
         f"- Range: {meta['since'] or 'beginning'} – {meta['until'] or 'now'}"
         + (f", topic {meta['topic_id']}" if meta.get("topic_id") else ""),
-        f"- Messages: {meta['message_count']}" + (" (limit reached, export is incomplete)" if meta["truncated"] else ""),
+        f"- Messages: {meta['message_count']}" + (
+            f" (export is incomplete: {meta['truncated_reason']}; continue with after_id={meta['resume_after_id']})"
+            if meta["truncated"] else ""),
     ]
     day = None
     for item in items:
@@ -81,14 +86,20 @@ class Exporter:
         *,
         max_messages: int = 50_000,
         media_max_bytes: int = 50 * 1024 * 1024,
+        media_max_total_bytes: int = 1000 * 1024 * 1024,
+        time_budget: float = TIME_BUDGET,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.reader = reader
         self.export_dir = Path(export_dir)
         self.host_dir = Path(host_dir)
         self.max_messages = max_messages
         self.media_max_bytes = media_max_bytes
+        self.media_max_total_bytes = media_max_total_bytes
+        self.time_budget = time_budget
         self._now = now
+        self._clock = clock
 
     async def export_chat(
         self,
@@ -100,7 +111,9 @@ class Exporter:
         format: str = "both",
         include_media: bool = False,
         max_messages: int | None = None,
+        after_id: int | None = None,
     ) -> dict[str, Any]:
+        """Export messages oldest first. A partial export returns `resume_after_id` for the next call."""
         if format not in FORMATS:
             raise ReaderError(f"format must be one of {', '.join(FORMATS)}")
         limit = max(1, min(max_messages or DEFAULT_MAX_MESSAGES, self.max_messages))
@@ -109,6 +122,7 @@ class Exporter:
         chat_ref = entity_ref(entity)
         start, end = parse_date(since), parse_date(until, end=True)
         exported_at = self._now()
+        deadline = self._clock() + self.time_budget
 
         base = f"{_slug(chat_ref['name'] or '')}_{abs(chat_ref['id'])}_{exported_at:%Y%m%d-%H%M%S}"
         for attempt in range(1, 100):
@@ -128,10 +142,12 @@ class Exporter:
             raise ReaderError(f"too many exports of this chat in one second in {self.export_dir}")
 
         items: list[dict[str, Any]] = []
-        truncated = False
-        media_files = media_skipped = 0
+        stop_reason: str | None = None  # why the export stopped early
+        media_files = media_skipped = media_bytes = 0
         kwargs: dict[str, Any] = {"reverse": True}
-        if start:
+        if after_id:
+            kwargs["offset_id"] = after_id
+        elif start:
             kwargs["offset_date"] = start
         async for message in client.iter_messages(entity, limit=limit + 1, reply_to=topic_id or None, **kwargs):
             if end and message.date >= end:
@@ -139,7 +155,10 @@ class Exporter:
             if start and message.date < start:
                 continue
             if len(items) >= limit:
-                truncated = True
+                stop_reason = "max_messages reached"
+                break
+            if items and self._clock() > deadline:
+                stop_reason = f"time budget of {self.time_budget:g} s per call used up"
                 break
             item = message_dict(message)
             if include_media and item.get("media") and message.file is not None \
@@ -147,6 +166,9 @@ class Exporter:
                 size = message.file.size
                 if size is not None and size > self.media_max_bytes:
                     item["media"]["skipped"] = f"larger than {self.media_max_bytes // (1024 * 1024)} MB"
+                    media_skipped += 1
+                elif media_bytes + (size or 0) > self.media_max_total_bytes:
+                    item["media"]["skipped"] = f"media of this export reached {self.media_max_total_bytes // (1024 * 1024)} MB"
                     media_skipped += 1
                 else:
                     media_dir = target / "media"
@@ -156,7 +178,10 @@ class Exporter:
                     if saved:
                         item["media"]["file"] = f"media/{Path(saved).name}"
                         media_files += 1
+                        media_bytes += size if size is not None else Path(saved).stat().st_size
             items.append(item)
+        truncated = stop_reason is not None
+        resume_after_id = items[-1]["id"] if truncated and items else None
 
         meta = {
             "exported_at": iso(exported_at),
@@ -165,6 +190,8 @@ class Exporter:
             "topic_id": topic_id,
             "message_count": len(items),
             "truncated": truncated,
+            "truncated_reason": stop_reason,
+            "resume_after_id": resume_after_id,
         }
         files = {}
         if format in ("json", "both"):
@@ -180,6 +207,8 @@ class Exporter:
             "chat": chat_ref,
             "message_count": len(items),
             "truncated": truncated,
+            "truncated_reason": stop_reason,
+            "resume_after_id": resume_after_id,
             "media_files": media_files,
             "media_skipped": media_skipped,
             "directory": str(self.host_dir / folder),

@@ -60,6 +60,8 @@ class FakeTelegramClient:
         self.full: dict[int, object] = {}
         self.requests: list = []
         self.dialog_loads = 0
+        # Default notification settings per scope ("InputNotifyUsers", "InputNotifyChats", "InputNotifyBroadcasts").
+        self.notify_defaults: dict[str, types.PeerNotifySettings] = {}
         self.me = self.add(user(ME_ID, "Owner", username="owner", is_self=True))
 
     # Building the account
@@ -70,6 +72,7 @@ class FakeTelegramClient:
 
     def add_dialog(self, entity, *, unread=0, mentions=0, reactions=0, marked=False, muted=False,
                    archived=False, pinned=False):
+        """`muted`: True (muted), False (no own setting, the default of the chat type applies) or "unmuted"."""
         self.add(entity)
         self.dialog_rows.append((entity, dict(unread=unread, mentions=mentions, reactions=reactions, marked=marked,
                                               muted=muted, archived=archived, pinned=pinned)))
@@ -112,8 +115,9 @@ class FakeTelegramClient:
                 peer=utils.get_peer(entity), top_message=last.id if last else 0, read_inbox_max_id=0,
                 read_outbox_max_id=0, unread_count=opts["unread"], unread_mentions_count=opts["mentions"],
                 unread_reactions_count=opts["reactions"], unread_poll_votes_count=0,
-                notify_settings=types.PeerNotifySettings(
-                    mute_until=datetime(2038, 1, 1, tzinfo=timezone.utc) if opts["muted"] else None),
+                notify_settings=types.PeerNotifySettings(mute_until={
+                    True: datetime(2038, 1, 1, tzinfo=timezone.utc), False: None,
+                    "unmuted": datetime(1970, 1, 1, tzinfo=timezone.utc)}[opts["muted"]]),
                 pinned=opts["pinned"], unread_mark=opts["marked"], folder_id=1 if opts["archived"] else None,
             )
             yield Dialog(self, raw, self.entities, last)
@@ -176,6 +180,9 @@ class FakeTelegramClient:
         users = [e for e in self.entities.values() if isinstance(e, types.User)]
         chats = [e for e in self.entities.values() if not isinstance(e, types.User)]
         return users, chats
+
+    def _GetNotifySettingsRequest(self, request):
+        return self.notify_defaults.get(type(request.peer).__name__, types.PeerNotifySettings())
 
     def _GetDialogFiltersRequest(self, request):
         return types.messages.DialogFilters(filters=list(self.filters))

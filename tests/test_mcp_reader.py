@@ -6,6 +6,7 @@ import pytest
 from telethon import functions, types
 
 from tests.mcp_fakes import BASE_DATE, ME_ID, FakeTelegramClient, basic_group, channel, document, user, voice
+from transcription_bot.mcp_server.guard import ReadOnlyViolation
 from transcription_bot.mcp_server.reader import MAX_LIMIT, ReaderError, TelegramReader, parse_date
 
 
@@ -57,7 +58,37 @@ async def test_list_dialogs_pagination_and_cap(reader, client):
     for i in range(600):
         client.add_dialog(user(10_000 + i, f"User {i}"))
     reader.dialog_cache_seconds = -1  # reload
+    reader.max_response_chars = 10_000_000  # only the count limit applies here
     assert len((await reader.list_dialogs(limit=100_000))["dialogs"]) == 500
+
+
+async def test_dialog_lists_respect_the_response_size_budget(client):
+    for i in range(600):
+        client.add_dialog(user(10_000 + i, f"User {i}"))
+    reader = TelegramReader(client, max_response_chars=5_000)
+    first = await reader.list_dialogs(limit=500)
+    assert 0 < len(first["dialogs"]) < 500 and first["truncated_by_size"]
+    assert len(str(first)) < 10_000
+    second = await reader.list_dialogs(limit=500, offset=first["next_offset"])
+    assert second["offset"] == len(first["dialogs"])
+    assert {d["id"] for d in first["dialogs"]}.isdisjoint({d["id"] for d in second["dialogs"]})
+    chats = await reader.list_folder_chats(0, limit=500)
+    assert chats["truncated_by_size"] and chats["next_offset"] == len(chats["chats"])
+    small = await reader.list_dialogs(limit=3)
+    assert len(small["dialogs"]) == 3 and not small["truncated_by_size"]
+
+
+async def test_muted_follows_the_default_of_the_chat_type(client):
+    forever = types.PeerNotifySettings(mute_until=datetime(2038, 1, 1, tzinfo=timezone.utc))
+    client.notify_defaults["InputNotifyChats"] = forever  # all groups are muted by default
+    client.add_dialog(basic_group(12, "Unmuted group"), muted="unmuted")
+    reader = TelegramReader(client)
+    muted = {d["name"]: d["muted"] for d in (await reader.list_dialogs())["dialogs"]}
+    assert muted["Family"] is True and muted["Forum"] is True  # basic group and supergroup without own setting
+    assert muted["Unmuted group"] is False  # its own setting wins
+    assert muted["Alice Smith"] is False and muted["News"] is False and muted["Helper"] is False
+    scopes = {type(r.peer).__name__ for r in client.requests if isinstance(r, functions.account.GetNotifySettingsRequest)}
+    assert scopes == {"InputNotifyUsers", "InputNotifyChats", "InputNotifyBroadcasts"}
 
 
 async def test_dialogs_are_cached(client):
@@ -80,7 +111,8 @@ async def test_resolve(reader, client):
     assert (await reader.resolve("family")).title == "Family"
     assert (await reader.resolve("me")).id == ME_ID
     assert (await reader.resolve("@public_chan")).title == "Public"  # contacts.resolveUsername
-    assert [type(r).__name__ for r in client.requests] == ["ResolveUsernameRequest"]
+    assert [type(r).__name__ for r in client.requests
+            if not isinstance(r, functions.account.GetNotifySettingsRequest)] == ["ResolveUsernameRequest"]
     for bad, message in [("https://t.me/+AbCdEf", "invite links"), ("t.me/joinchat/AbCd", "invite links"),
                          ("No such chat at all", "no chat"), ("-555", "not among"), ("", "empty")]:
         with pytest.raises(ReaderError, match=message):
@@ -195,6 +227,30 @@ async def test_search_in_a_chat(reader, client):
     assert [m["id"] for m in rest["messages"]] == [200]
     with pytest.raises(ReaderError, match="media must be"):
         await reader.search_messages("Alice Smith", media="hologram")
+
+
+async def test_search_by_sender_keeps_the_cursor_when_a_page_has_no_match(reader, client):
+    # Private chat: Telegram ignores from_id, so a full page can contain only the other side.
+    client.add_message(client.alice, 400, "hello from me", sender=client.me, minutes=3000)
+    for i in range(401, 405):
+        client.add_message(client.alice, i, f"hello {i}", sender=client.alice, minutes=3000 + i)
+    page = await reader.search_messages("Alice Smith", query="hello", sender="me", limit=2)
+    assert page["messages"] == [] and page["has_more"] and page["next_offset_id"] == 403
+    page = await reader.search_messages("Alice Smith", query="hello", sender="me", limit=2,
+                                        offset_id=page["next_offset_id"])
+    assert page["messages"] == [] and page["next_offset_id"] == 401  # no page is fetched twice
+    page = await reader.search_messages("Alice Smith", query="hello", sender="me", limit=2,
+                                        offset_id=page["next_offset_id"])
+    assert [m["id"] for m in page["messages"]] == [400]
+
+
+async def test_guard_violations_are_not_hidden_as_resolve_errors(reader, client):
+    def blocked(request):
+        raise ReadOnlyViolation("blocked")
+
+    client._ResolveUsernameRequest = blocked
+    with pytest.raises(ReadOnlyViolation):
+        await reader.resolve("@somebody_else")
 
 
 async def test_search_in_a_group_by_sender_and_topic(reader, client):

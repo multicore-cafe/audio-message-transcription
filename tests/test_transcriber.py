@@ -5,7 +5,7 @@ import openai
 import pytest
 
 from transcription_bot.errors import PermanentError, TransientError
-from transcription_bot.transcriber import MAX_FILE_SIZE, PROMPT, Transcriber, classify_openai_error
+from transcription_bot.transcriber import PROMPT, Transcriber, classify_openai_error
 
 
 def status_error(cls, status, body=None):
@@ -19,10 +19,13 @@ def status_error(cls, status, body=None):
         (openai.APIConnectionError(request=httpx2.Request("POST", "https://x")), TransientError),
         (openai.APITimeoutError(request=httpx2.Request("POST", "https://x")), TransientError),
         (status_error(openai.RateLimitError, 429), TransientError),
-        (status_error(openai.RateLimitError, 429, {"code": "insufficient_quota"}), PermanentError),
+        # Account problems (quota, billing, key) are fixed by the owner: retry, do not fail the message.
+        (status_error(openai.RateLimitError, 429, {"code": "insufficient_quota"}), TransientError),
+        (status_error(openai.AuthenticationError, 401), TransientError),
+        (status_error(openai.PermissionDeniedError, 403), TransientError),
         (status_error(openai.InternalServerError, 503), TransientError),
         (status_error(openai.BadRequestError, 400), PermanentError),
-        (status_error(openai.AuthenticationError, 401), PermanentError),
+        (status_error(openai.NotFoundError, 404), PermanentError),
     ],
 )
 def test_classify_openai_error(exc, kind):
@@ -50,13 +53,6 @@ async def test_sends_ogg_bytes_with_prompt():
     assert client.kwargs["file"] == ("voice.ogg", b"OggS...", "audio/ogg")
     assert client.kwargs["prompt"] == PROMPT
     assert client.kwargs["response_format"] == "text"
-
-
-async def test_too_large_audio_is_permanent_without_request():
-    client = FakeClient()
-    with pytest.raises(PermanentError):
-        await Transcriber(client).transcribe(b"0" * (MAX_FILE_SIZE + 1))
-    assert client.kwargs is None
 
 
 async def test_api_errors_are_classified():

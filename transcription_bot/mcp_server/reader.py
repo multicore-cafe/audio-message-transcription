@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from telethon import functions, types, utils
+from telethon import errors, functions, types, utils
 
 from .folders import ARCHIVE_FOLDER_ID, DialogFacts, Folder, parse_filter
+from .guard import ReadOnlyViolation
 from .serialize import chat_kind, entity_ref, iso, message_dict, usernames
+
+log = logging.getLogger(__name__)
 
 MAX_LIMIT = 100
 MAX_DIALOG_LIMIT = 500
@@ -71,10 +75,9 @@ def _entity_map(result) -> dict[int, Any]:
     return {utils.get_peer_id(x): x for x in itertools.chain(result.users, result.chats)}
 
 
-def _muted(dialog) -> bool:
-    settings = dialog.dialog.notify_settings
-    until = getattr(settings, "mute_until", None)
-    return bool(until and until > datetime.now(timezone.utc))
+# Default notification settings of each chat type; a chat without its own setting follows them.
+NOTIFY_SCOPES = {"user": types.InputNotifyUsers, "group": types.InputNotifyChats,
+                 "channel": types.InputNotifyBroadcasts}
 
 
 class TelegramReader:
@@ -92,6 +95,7 @@ class TelegramReader:
         self._clock = clock
         self._dialogs: list | None = None
         self._dialogs_at = 0.0
+        self._default_mute: dict[str, datetime | None] = {}
         self._me = None
 
     # Entities and dialogs
@@ -106,8 +110,25 @@ class TelegramReader:
         now = self._clock()
         if self._dialogs is None or now - self._dialogs_at > self.dialog_cache_seconds:
             self._dialogs = [d async for d in self.client.iter_dialogs(ignore_migrated=True)]
+            self._default_mute = await self._load_default_mute()
             self._dialogs_at = now
         return self._dialogs
+
+    async def _load_default_mute(self) -> dict[str, datetime | None]:
+        try:
+            return {kind: (await self.client(functions.account.GetNotifySettingsRequest(scope()))).mute_until
+                    for kind, scope in NOTIFY_SCOPES.items()}
+        except errors.RPCError as exc:
+            log.warning("cannot read the default notification settings (muted = own setting only): %s", exc)
+            return {}
+
+    def _muted(self, dialog) -> bool:
+        """Muted by the chat's own setting or, if it has none, by the default of its chat type."""
+        until = getattr(dialog.dialog.notify_settings, "mute_until", None)
+        if until is None:
+            kind = chat_kind(dialog.entity)
+            until = self._default_mute.get("user" if kind == "bot" else kind)
+        return bool(until and until > datetime.now(timezone.utc))
 
     async def resolve(self, chat: str | int):
         """Chat by numeric id, @username / t.me link, or exact title. Never joins anything."""
@@ -156,6 +177,8 @@ class TelegramReader:
                 return dialog.entity
         try:
             result = await self.client(functions.contacts.ResolveUsernameRequest(name))
+        except ReadOnlyViolation:
+            raise
         except Exception as exc:
             raise ReaderError(f"cannot resolve @{name}: {exc}") from exc
         entity = _entity_map(result).get(utils.get_peer_id(result.peer))
@@ -169,7 +192,7 @@ class TelegramReader:
             peer_id=dialog.id,
             kind=chat_kind(entity),
             is_contact=isinstance(entity, types.User) and bool(entity.contact or entity.is_self),
-            muted=_muted(dialog),
+            muted=self._muted(dialog),
             unread=dialog.unread_count > 0 or bool(dialog.dialog.unread_mark),
             unread_mentions=dialog.unread_mentions_count > 0,
             archived=dialog.folder_id == ARCHIVE_FOLDER_ID,
@@ -187,7 +210,7 @@ class TelegramReader:
             "unread_mentions_count": dialog.unread_mentions_count,
             "unread_reactions_count": dialog.unread_reactions_count,
             "marked_unread": bool(dialog.dialog.unread_mark),
-            "muted": _muted(dialog),
+            "muted": self._muted(dialog),
             "archived": dialog.folder_id == ARCHIVE_FOLDER_ID,
             "pinned": dialog.pinned,
             "forum": bool(getattr(entity, "forum", False)),
@@ -231,10 +254,19 @@ class TelegramReader:
         return self._page([self._dialog_dict(d) for d in selected], "dialogs", limit, offset)
 
     def _page(self, items: list, key: str, limit: int, offset: int) -> dict[str, Any]:
+        """One page of `items` that also stays within the response size budget."""
         offset = max(0, int(offset or 0))
-        page = items[offset:offset + limit]
+        wanted = items[offset:offset + limit]
+        page, used = [], 0
+        for item in wanted:
+            size = len(json.dumps(item, ensure_ascii=False))
+            if page and used + size > self.max_response_chars:
+                break
+            page.append(item)
+            used += size
         more = offset + len(page) < len(items)
-        return {key: page, "total": len(items), "offset": offset, "next_offset": offset + len(page) if more else None}
+        return {key: page, "total": len(items), "offset": offset, "next_offset": offset + len(page) if more else None,
+                "truncated_by_size": len(page) < len(wanted)}
 
     async def _folders(self) -> list[Folder]:
         result = await self.client(functions.messages.GetDialogFiltersRequest())
@@ -242,7 +274,7 @@ class TelegramReader:
         me = await self.me()
         return [parse_filter(item, me.id) for item in raw]
 
-    async def list_folders(self) -> dict[str, Any]:
+    async def list_folders(self, *, offset: int = 0) -> dict[str, Any]:
         names = {d.id: d.name for d in await self.dialogs()}
 
         def peers(ids):
@@ -260,7 +292,7 @@ class TelegramReader:
             if folder.kind == "filter":
                 item.update(flags=folder.flags(), exclude_peers=peers(folder.exclude))
             folders.append(item)
-        return {"folders": folders}
+        return self._page(folders, "folders", len(folders), offset)
 
     async def list_folder_chats(self, folder_id: int, *, limit: int | None = 50, offset: int = 0) -> dict[str, Any]:
         folders = {f.id: f for f in await self._folders()}
@@ -506,12 +538,17 @@ class TelegramReader:
             messages = [m for m in messages if m.sender_id == wanted]
         items, cut = self._collect(messages, limit, clamp(max_text, MAX_TEXT, MAX_TEXT * 16), _entity_map(result))
         more = cut or len(result.messages) >= limit
+        # Continue after the last message Telegram returned, even if the sender filter dropped it.
+        if cut:
+            next_offset_id = items[-1]["id"]
+        else:
+            next_offset_id = result.messages[-1].id if more and result.messages else None
         return {
             "chat": entity_ref(entity),
             "total": getattr(result, "count", len(result.messages)),
             "messages": items,
             "has_more": more,
-            "next_offset_id": items[-1]["id"] if more and items else None,
+            "next_offset_id": next_offset_id,
             "truncated_by_size": cut,
         }
 

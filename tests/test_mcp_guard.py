@@ -3,8 +3,10 @@
 import asyncio
 import inspect
 import re
+from pathlib import Path
 
 import pytest
+import telethon
 from telethon import functions, types
 from telethon.client.telegrambaseclient import LAYER
 from telethon.network import MTProtoSender
@@ -64,6 +66,9 @@ FORBIDDEN = {
     "auth.LogOut": functions.auth.LogOutRequest(),
     "auth.SendCode (outside login)": functions.auth.SendCodeRequest("+1", 1, "x", types.CodeSettings()),
     "account.UpdateProfile": functions.account.UpdateProfileRequest(about="x"),
+    "account.UpdateNotifySettings": functions.account.UpdateNotifySettingsRequest(
+        types.InputNotifyUsers(), types.InputPeerNotifySettings(mute_until=None)),
+    "account.ResetNotifySettings": functions.account.ResetNotifySettingsRequest(),
     "contacts.Block": functions.contacts.BlockRequest(PEER),
 }
 
@@ -87,6 +92,9 @@ ALLOWED = {
     "messages.SearchGlobal": functions.messages.SearchGlobalRequest(
         "q", types.InputMessagesFilterEmpty(), None, None, 0, types.InputPeerEmpty(), 0, 10),
     "upload.GetFile": functions.upload.GetFileRequest(types.InputDocumentFileLocation(1, 1, b"", ""), 0, 4096),
+    "account.GetNotifySettings(users)": functions.account.GetNotifySettingsRequest(types.InputNotifyUsers()),
+    "account.GetNotifySettings(chats)": functions.account.GetNotifySettingsRequest(types.InputNotifyChats()),
+    "account.GetNotifySettings(broadcasts)": functions.account.GetNotifySettingsRequest(types.InputNotifyBroadcasts()),
 }
 
 
@@ -189,6 +197,56 @@ def test_allow_list_contains_only_reads():
     assert functions.messages.GetMessagesViewsRequest not in READ_ONLY_REQUESTS  # increments view counters
 
 
+def test_notify_settings_are_read_but_never_changed():
+    assert functions.account.GetNotifySettingsRequest in READ_ONLY_REQUESTS
+    for name, cls in vars(functions.account).items():
+        if "Notify" in name and cls is not functions.account.GetNotifySettingsRequest:
+            assert cls not in READ_ONLY_REQUESTS, name
+
+
+def test_violation_is_not_mistaken_for_a_network_error():
+    # Telethon's update loop and our startup code treat OSError as "network down" and retry.
+    assert not issubclass(ReadOnlyViolation, OSError)
+
+
+# Every place in Telethon that creates an MTProto sender, a client or sends on a sender, as
+# reviewed for Telethon 1.45 (see guard.py). A new Telethon version that adds or changes one of
+# them makes this test fail, so the guard is reviewed again before the upgrade.
+REVIEWED_SEND_SITES = {
+    ("client/chats.py", "return await sender.send(req)"),
+    ("client/telegrambaseclient.py", "self._sender = MTProtoSender("),
+    ("client/telegrambaseclient.py", "await self._sender.send(functions.InvokeWithLayerRequest(LAYER, req))"),
+    ("client/telegrambaseclient.py", "sender = MTProtoSender(None, loggers=self._log)"),
+    ("client/telegrambaseclient.py", "await sender.send(req)"),
+    ("client/telegrambaseclient.py", "client = self.__class__("),
+    ("client/users.py", "future = sender.send(request, ordered=ordered)"),
+    ("network/mtprotoplainsender.py", "await self._connection.send("),
+    ("network/mtprotosender.py", "future = sender.send(request)"),  # in a docstring
+    ("network/mtprotosender.py", "plain = MTProtoPlainSender(self._connection, loggers=self._loggers)"),
+    ("network/mtprotosender.py", "self.send(PingRequest(rnd_id))"),
+    ("network/mtprotosender.py", "await self._connection.send(data)"),
+    ("network/authenticator.py", "res_pq = await sender.send(ReqPqMultiRequest(nonce))"),
+    ("network/authenticator.py", "server_dh_params = await sender.send(ReqDHParamsRequest("),
+    ("network/authenticator.py", "dh_gen = await sender.send(SetClientDHParamsRequest("),
+    ("sessions/abstract.py", "return to_instance or self.__class__()"),  # session clone, no network
+}
+SEND_SITE = re.compile(r"MTProto(Plain)?Sender\(|\.send\(|self\.__class__\(")
+
+
+def test_telethon_send_paths_match_the_reviewed_version():
+    root = Path(telethon.__file__).parent
+    found = set()
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith("tl/"):
+            continue  # generated TL types, no network code
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if SEND_SITE.search(line):
+                found.add((relative, line.strip()))
+    assert telethon.__version__.startswith("1.45."), "review guard.py against the new Telethon, then update this test"
+    assert found == REVIEWED_SEND_SITES
+
+
 # The real Telethon client with a recording transport in place of the network.
 
 
@@ -239,6 +297,7 @@ def empty_answer(request):
             count=0, messages=[], topics=[], chats=[], users=[]),
         functions.messages.GetDialogFiltersRequest: lambda: types.messages.DialogFilters(
             filters=[types.DialogFilterDefault()]),
+        functions.account.GetNotifySettingsRequest: lambda: types.PeerNotifySettings(),
         functions.channels.GetFullChannelRequest: lambda: types.messages.ChatFull(
             full_chat=types.ChannelFull(id=50, about="about", read_inbox_max_id=0, read_outbox_max_id=0,
                                         unread_count=0, chat_photo=types.PhotoEmpty(0),
@@ -349,7 +408,7 @@ async def test_every_tool_runs_through_the_real_client_within_the_allow_list(cli
     assert kinds == {
         "GetDialogsRequest", "GetUsersRequest", "GetDialogFiltersRequest", "ResolveUsernameRequest",
         "GetFullChannelRequest", "GetForumTopicsRequest", "GetHistoryRequest", "GetRepliesRequest",
-        "GetMessagesRequest", "SearchRequest", "SearchGlobalRequest",
+        "GetMessagesRequest", "SearchRequest", "SearchGlobalRequest", "GetNotifySettingsRequest",
     }
     for request in recorder.sent:
         check_request(request)  # nothing slipped through

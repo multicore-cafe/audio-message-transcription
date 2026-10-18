@@ -1,3 +1,6 @@
+# Host directory for MCP exports; the same value is mounted and reported by the tools.
+x-export-host-dir: &export-host-dir ${MCP_EXPORT_HOST_DIR:-${PWD}/exports}
+
 services:
   bot:
     build: .
@@ -9,10 +12,9 @@ services:
         required: false
     environment:
       DATA_DIR: /data
-    # The host directory must be writable by this uid (1000 by default).
-    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    # Named volume: Docker creates it owned by the image's user, so it is writable on the first run.
     volumes:
-      - ./data:/data
+      - bot-data:/data
     stop_grace_period: 20s
     logging:
       driver: json-file
@@ -20,9 +22,11 @@ services:
         max-size: 10m
         max-file: "3"
 
-  # Read-only Telegram MCP server for AI clients. It has its own Telegram session in ./data/mcp
-  # and never sees the bot's session. Published on the loopback interface only.
+  # Read-only Telegram MCP server for AI clients, started only on request:
+  # `docker compose --profile mcp up -d` (or `docker compose up -d mcp`).
+  # It has its own Telegram session in its own volume and never sees the bot's session.
   mcp:
+    profiles: ["mcp"]
     build: .
     image: transcription-bot
     command: ["telegram-mcp", "serve"]
@@ -36,18 +40,25 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8790"
       MCP_EXPORT_DIR: /exports
-      # Where the export directory is on the host; tools return paths below it.
-      MCP_EXPORT_HOST_DIR: ${MCP_EXPORT_HOST_DIR:-${PWD}/exports}
-    # Both host directories must be writable by this uid (1000 by default).
-    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+      MCP_EXPORT_HOST_DIR: *export-host-dir
     ports:
+      # Loopback only.
       - "127.0.0.1:${MCP_PORT:-8790}:8790"
     volumes:
-      - ./data/mcp:/data
-      - ${MCP_EXPORT_HOST_DIR:-./exports}:/exports
+      - mcp-data:/data
+      # Must already exist (`mkdir -p exports`), so Docker never creates it as root.
+      - type: bind
+        source: *export-host-dir
+        target: /exports
+        bind:
+          create_host_path: false
     stop_grace_period: 20s
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
+
+volumes:
+  bot-data:
+  mcp-data:

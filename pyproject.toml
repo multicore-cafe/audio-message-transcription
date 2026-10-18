@@ -5,7 +5,7 @@ description = "Telegram userbot that transcribes the owner's voice messages with
 authors = [{ name = "kana", email = "andrew4chrome@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
-    "telethon>=1.40,<2",
+    "telethon>=1.45,<1.46",  # guard.py is reviewed against this minor version (see tests/test_mcp_guard.py)
     "openai>=2.9",
     "python-dotenv>=1.2",
     "mcp>=2.3,<3",

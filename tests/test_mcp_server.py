@@ -100,3 +100,22 @@ async def test_dns_rebinding_is_blocked(server):
         bad_origin = await client.post("/mcp", json=INITIALIZE, headers={**HEADERS, "Origin": "http://evil.example"})
     assert bad_host.status_code == 421
     assert bad_origin.status_code == 403
+
+
+async def test_bearer_token_is_required_when_configured(server):
+    app = http_app(server, auth_token="s3cret")
+    async with app.router.lifespan_context(app), asgi_client(app, "127.0.0.1:8790") as client:
+        missing = await client.post("/mcp", json=INITIALIZE, headers=HEADERS)
+        wrong = await client.post("/mcp", json=INITIALIZE, headers={**HEADERS, "Authorization": "Bearer nope"})
+        right = await client.post("/mcp", json=INITIALIZE, headers={**HEADERS, "Authorization": "Bearer s3cret"})
+    assert missing.status_code == 401 and wrong.status_code == 401
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert right.status_code == 200
+
+
+async def test_mcp_client_with_a_token(server):
+    app = http_app(server, auth_token="s3cret")
+    async with app.router.lifespan_context(app), asgi_client(app, "127.0.0.1:8790") as http_client:
+        http_client.headers["Authorization"] = "Bearer s3cret"
+        async with Client(streamable_http_client("http://127.0.0.1:8790/mcp", http_client=http_client)) as mcp:
+            assert {tool.name for tool in (await mcp.list_tools()).tools} == TOOLS

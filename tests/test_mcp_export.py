@@ -60,7 +60,8 @@ async def test_export_date_range_formats_and_limits(client, tmp_path):
     limited = await exp.export_chat(-10, format="markdown", max_messages=4)
     assert limited["message_count"] == 4 and limited["truncated"] and set(limited["files"]) == {"markdown"}
     md = (tmp_path / "exports" / Path(limited["directory"]).name / "messages.md").read_text()
-    assert "(limit reached, export is incomplete)" in md
+    assert "(export is incomplete: max_messages reached; continue with after_id=4)" in md
+    assert limited["resume_after_id"] == 4 and limited["truncated_reason"] == "max_messages reached"
 
     capped = exporter(client, tmp_path, max_messages=2)
     capped._now = lambda: NOW.replace(minute=32)
@@ -104,3 +105,31 @@ async def test_exports_in_the_same_second_get_separate_folders(client, tmp_path)
     second = await exp.export_chat("@alice")
     assert second["directory"] == first["directory"] + "-2"
     assert Path(tmp_path / "exports" / Path(second["directory"]).name / "messages.json").exists()
+
+
+async def test_export_media_stops_at_the_total_size_budget(client, tmp_path):
+    for i in range(1, 6):
+        client.add_message(client.alice, i, f"voice {i}", sender=client.alice, media=voice())
+    # Each voice note is 100 bytes; the budget allows two of them.
+    result = await exporter(client, tmp_path, media_max_total_bytes=250).export_chat("@alice", include_media=True)
+    assert (result["media_files"], result["media_skipped"]) == (2, 3)
+    data = json.loads((tmp_path / "exports" / Path(result["directory"]).name / "messages.json").read_text())
+    assert "reached" in data["messages"][-1]["media"]["skipped"]
+    assert result["message_count"] == 5  # the messages themselves are all exported
+
+
+async def test_export_stops_at_the_time_budget_and_resumes(client, tmp_path):
+    ticks = iter(range(1000))
+    exp = exporter(client, tmp_path, time_budget=2.5, clock=lambda: next(ticks))
+    first = await exp.export_chat(-10, format="json")
+    assert first["truncated"] and "time budget" in first["truncated_reason"]
+    assert first["message_count"] == 3 and first["resume_after_id"] == 3
+    exp._now = lambda: NOW.replace(minute=40)
+    ticks = iter(range(1000))
+    exp._clock = lambda: next(ticks)
+    second = await exp.export_chat(-10, format="json", after_id=first["resume_after_id"])
+    data = json.loads((tmp_path / "exports" / Path(second["directory"]).name / "messages.json").read_text())
+    assert [m["id"] for m in data["messages"]] == [4, 5, 6]
+    exp.time_budget = 1000
+    rest = await exp.export_chat(-10, format="json", after_id=6)
+    assert rest["message_count"] == 4 and not rest["truncated"] and rest["resume_after_id"] is None
