@@ -25,3 +25,6 @@ __pycache__/
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+# Host-specific compose overrides
+docker-compose.override.yml
