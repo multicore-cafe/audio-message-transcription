@@ -1,36 +1,31 @@
-[tool.poetry]
+[project]
 name = "transcription-bot"
-version = "0.1.0"
-description = ""
-authors = [
-    "kana <andrew4chrome@gmail.com>",
+version = "0.2.0"
+description = "Telegram userbot that transcribes the owner's voice messages with OpenAI"
+authors = [{ name = "kana", email = "andrew4chrome@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "telethon>=1.40,<2",
+    "openai>=2.9",
+    "python-dotenv>=1.2",
 ]
-packages = [
-    { include = "transcription_bot" },
+
+[project.scripts]
+transcription-bot = "transcription_bot.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1.0",
 ]
-
-[tool.poetry.dependencies]
-python = "^3.12"
-
-pyrogram = "^2.0.106"
-tgcrypto = "^1.2.5"
-pydub = "^0.25.1"
-openai = "^2.9.0"
-python-dotenv = "^1.2.1"
-slack-sdk = "^3.39.0"
-slack-bolt = "^1.27.0"
-ngrok = "^1.4.0"
-moviepy = "^2.2.1"
-fastapi = "^0.124.0"
-uvicorn = "^0.38.0"
-sqlalchemy = "^2.0.44"
-alembic = "^1.16.5"
-asyncpg = "^0.31.0"
-psycopg2-binary = "^2.9.11"
-
 
 [build-system]
-requires = [
-    "poetry-core",
-]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
