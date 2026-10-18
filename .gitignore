@@ -1,6 +1,7 @@
 # Secrets and runtime state
 .env
 /data
+/exports
 *.session
 *.session-journal
 *.sqlite3

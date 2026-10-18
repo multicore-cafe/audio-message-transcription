@@ -2,6 +2,7 @@
 .venv
 .env
 data
+exports
 tests
 **/__pycache__
 .pytest_cache

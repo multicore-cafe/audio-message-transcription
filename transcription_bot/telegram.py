@@ -17,11 +17,16 @@ log = logging.getLogger(__name__)
 
 
 def create_client(
-    settings: TelegramSettings, *, catch_up: bool = False, receive_updates: bool = True
+    settings: TelegramSettings,
+    *,
+    catch_up: bool = False,
+    receive_updates: bool = True,
+    client_class: type[TelegramClient] = TelegramClient,
+    **extra,
 ) -> TelegramClient:
-    """Client with an SQLite session file at `settings.session_path`."""
+    """Client with an SQLite session file at `settings.session_path`; `extra` goes to `client_class`."""
     settings.session_path.parent.mkdir(parents=True, exist_ok=True)
-    return TelegramClient(
+    return client_class(
         str(settings.session_path),
         settings.api_id,
         settings.api_hash,
@@ -31,6 +36,7 @@ def create_client(
         auto_reconnect=True,
         catch_up=catch_up,
         receive_updates=receive_updates,
+        **extra,
     )
 
 

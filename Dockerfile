@@ -17,11 +17,14 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY transcription_bot ./transcription_bot
 RUN uv sync --locked --no-dev
 
-RUN useradd --uid 1000 --user-group --create-home bot && mkdir /data && chown bot:bot /data
+RUN useradd --uid 1000 --user-group --create-home bot && mkdir /data /exports && chown bot:bot /data /exports
 
 ENV PATH=/app/.venv/bin:$PATH \
     DATA_DIR=/data
 
 USER bot
+
+# Port of the read-only MCP server (compose service `mcp`).
+EXPOSE 8790
 
 CMD ["transcription-bot", "run"]

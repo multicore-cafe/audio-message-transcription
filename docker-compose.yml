@@ -19,3 +19,35 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  # Read-only Telegram MCP server for AI clients. It has its own Telegram session in ./data/mcp
+  # and never sees the bot's session. Published on the loopback interface only.
+  mcp:
+    build: .
+    image: transcription-bot
+    command: ["telegram-mcp", "serve"]
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8790"
+      MCP_EXPORT_DIR: /exports
+      # Where the export directory is on the host; tools return paths below it.
+      MCP_EXPORT_HOST_DIR: ${MCP_EXPORT_HOST_DIR:-${PWD}/exports}
+    # Both host directories must be writable by this uid (1000 by default).
+    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8790}:8790"
+    volumes:
+      - ./data/mcp:/data
+      - ${MCP_EXPORT_HOST_DIR:-./exports}:/exports
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
