@@ -147,7 +147,7 @@ async def test_read_messages_oldest_first_and_date_range(reader):
                                         oldest_first=True)
     assert [m["id"] for m in window["messages"]] == list(range(30, 40)) and not window["has_more"]
     assert (await reader.read_messages("Family", since="2026-01-02"))["messages"] == []
-    assert len((await reader.read_messages("Family", until="2026-01-01"))["messages"]) == 50  # whole day
+    assert len((await reader.read_messages("Family", until="2026-01-01", limit=50))["messages"]) == 50  # whole day
 
 
 async def test_read_messages_limits_and_message_fields(reader, client):

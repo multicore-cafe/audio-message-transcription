@@ -427,7 +427,7 @@ class TelegramReader:
         self,
         chat: str | int,
         *,
-        limit: int | None = 50,
+        limit: int | None = 20,
         offset_id: int = 0,
         min_id: int = 0,
         max_id: int = 0,
@@ -441,7 +441,7 @@ class TelegramReader:
         if topic_id and reply_to:
             raise ReaderError("pass either topic_id or reply_to, not both")
         entity = await self.resolve(chat)
-        limit = clamp(limit, 50, MAX_LIMIT)
+        limit = clamp(limit, 20, MAX_LIMIT)
         max_text = clamp(max_text, MAX_TEXT, MAX_TEXT * 16)
         start, end = parse_date(since), parse_date(until, end=True)
         kwargs: dict[str, Any] = {"min_id": min_id or 0, "max_id": max_id or 0, "offset_id": offset_id or 0}
@@ -509,13 +509,13 @@ class TelegramReader:
         until: str | None = None,
         media: str | None = None,
         topic_id: int | None = None,
-        limit: int | None = 50,
+        limit: int | None = 20,
         offset_id: int = 0,
         max_text: int | None = MAX_TEXT,
     ) -> dict[str, Any]:
         entity = await self.resolve(chat)
         from_entity = await self.resolve(sender) if sender not in (None, "") else None
-        limit = clamp(limit, 50, MAX_LIMIT)
+        limit = clamp(limit, 20, MAX_LIMIT)
         result = await self.client(functions.messages.SearchRequest(
             peer=utils.get_input_peer(entity),
             q=query or "",
@@ -560,7 +560,7 @@ class TelegramReader:
         until: str | None = None,
         media: str | None = None,
         chat_type: str | None = None,
-        limit: int | None = 50,
+        limit: int | None = 20,
         cursor: str | None = None,
         max_text: int | None = MAX_TEXT,
     ) -> dict[str, Any]:
@@ -581,7 +581,7 @@ class TelegramReader:
                 offset_peer = await self.client.get_input_entity(peer)
             except (ValueError, TypeError):
                 raise ReaderError("the cursor refers to an unknown chat; start the search again") from None
-        limit = clamp(limit, 50, MAX_LIMIT)
+        limit = clamp(limit, 20, MAX_LIMIT)
         result = await self.client(functions.messages.SearchGlobalRequest(
             q=query or "",
             filter=self._media_filter(media),

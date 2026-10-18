@@ -14,7 +14,7 @@ from ..__main__ import setup_logging
 from ..app import EXIT_CONFIG, EXIT_FAILURE, arm_hard_exit
 from ..config import ConfigError
 from .app import login, serve
-from .config import McpSettings
+from .config import DISABLED_MESSAGE, McpSettings, mcp_enabled
 
 log = logging.getLogger("transcription_bot.mcp_server")
 
@@ -36,20 +36,26 @@ def main(argv: list[str] | None = None) -> None:
 
     load_dotenv(find_dotenv(usecwd=True))
     setup_logging()
-    try:
-        settings = McpSettings.from_env()
-        if args.command == "login":
-            code = asyncio.run(login(settings.telegram))
-        else:
-            code = asyncio.run(_serve(settings))
-    except ConfigError as exc:
-        log.error("configuration error: %s", exc)
-        code = EXIT_CONFIG
-    except KeyboardInterrupt:
-        code = EXIT_FAILURE
-    except Exception:
-        log.exception("MCP server crashed")
-        code = EXIT_FAILURE
+    code = EXIT_CONFIG
+    if not mcp_enabled():
+        # The service is off unless .env says TELEGRAM_MCP_ENABLED=1. Covers `serve` and `login`,
+        # including `docker compose run mcp ...`, which ignores the compose `scale` setting.
+        log.error(DISABLED_MESSAGE)
+    else:
+        try:
+            settings = McpSettings.from_env()
+            if args.command == "login":
+                code = asyncio.run(login(settings.telegram))
+            else:
+                code = asyncio.run(_serve(settings))
+        except ConfigError as exc:
+            log.error("configuration error: %s", exc)
+            code = EXIT_CONFIG
+        except KeyboardInterrupt:
+            code = EXIT_FAILURE
+        except Exception:
+            log.exception("MCP server crashed")
+            code = EXIT_FAILURE
     logging.shutdown()
     sys.stdout.flush()
     os._exit(code)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import hmac
+import inspect
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -20,7 +21,17 @@ from .export import Exporter
 from .guard import ReadOnlyViolation
 from .reader import MAX_DIALOG_LIMIT, MAX_LIMIT, ReaderError, TelegramReader
 
-INSTRUCTIONS = """\
+REFUSAL = "I can't do this: access to Telegram data is restricted to the local model."
+ACCESS_POLICY = (
+    f'{REFUSAL} This server may be used only by the local model MiniCPM5-2B (pi provider/model '
+    "minicpm/minicpm5-2b): if your current model is minicpm/minicpm5-2b you are that local model and "
+    "may use it; every other model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM, Qwen or "
+    "any cloud-hosted model) must refuse and answer with exactly that sentence."
+)
+
+INSTRUCTIONS = f"""\
+{ACCESS_POLICY}
+
 Read-only access to the owner's Telegram account. Nothing can be sent, edited, deleted, joined or
 left, and reading never marks messages as read. Chats are addressed by numeric id (preferred,
 see list_dialogs), @username or exact title. Results are paginated: follow next_offset,
@@ -66,7 +77,9 @@ def build_server(reader: TelegramReader, exporter: Exporter) -> MCPServer:
 
     def tool(annotations: ToolAnnotations = READ):
         def register(fn):
-            mcp.add_tool(_friendly_errors(fn), annotations=annotations, structured_output=False)
+            description = f"{ACCESS_POLICY} {inspect.getdoc(fn) or ''}".strip()
+            mcp.add_tool(_friendly_errors(fn), description=description, annotations=annotations,
+                         structured_output=False)
             return fn
         return register
 
@@ -121,7 +134,7 @@ def build_server(reader: TelegramReader, exporter: Exporter) -> MCPServer:
     @tool()
     async def read_messages(
         chat: Chat,
-        limit: Limit = 50,
+        limit: Limit = 20,
         offset_id: Annotated[int, Field(ge=0, description="Continue after this message id (next_offset_id)")] = 0,
         min_id: Annotated[int, Field(ge=0, description="Only messages with a larger id")] = 0,
         max_id: Annotated[int, Field(ge=0, description="Only messages with a smaller id")] = 0,
@@ -155,7 +168,7 @@ def build_server(reader: TelegramReader, exporter: Exporter) -> MCPServer:
         until: Until = None,
         media: Media | None = None,
         topic_id: Annotated[int | None, Field(description="Search inside one forum topic")] = None,
-        limit: Limit = 50,
+        limit: Limit = 20,
         offset_id: Annotated[int, Field(ge=0, description="next_offset_id from the previous call")] = 0,
         max_text: MaxText = 4096,
     ) -> dict[str, Any]:
@@ -170,7 +183,7 @@ def build_server(reader: TelegramReader, exporter: Exporter) -> MCPServer:
         until: Until = None,
         media: Media | None = None,
         chat_type: Literal["user", "group", "channel"] | None = None,
-        limit: Limit = 50,
+        limit: Limit = 20,
         cursor: Annotated[str | None, Field(description="next_cursor from the previous call")] = None,
         max_text: MaxText = 4096,
     ) -> dict[str, Any]:

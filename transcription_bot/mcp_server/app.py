@@ -16,7 +16,7 @@ from ..config import TelegramSettings
 from ..errors import FatalError
 from ..telegram import STARTUP_TIMEOUT, check_connection, connect_authorized, create_client, session_lock
 from ..watchdog import Watchdog
-from .config import McpSettings
+from .config import DISABLED_MESSAGE, McpSettings, mcp_enabled
 from .export import Exporter
 from .guard import LOGIN_REQUESTS, READ_ONLY_REQUESTS, ReadOnlyTelegramClient
 from .reader import TelegramReader
@@ -49,6 +49,9 @@ class _Server(uvicorn.Server):
 
 
 async def serve(settings: McpSettings) -> int:
+    if not mcp_enabled():
+        log.error(DISABLED_MESSAGE)
+        return EXIT_CONFIG
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(session_lock(settings.telegram))
@@ -85,9 +88,7 @@ async def _serve(settings: McpSettings, client: ReadOnlyTelegramClient) -> int:
     log.info("logged in as %s (id %s); read-only MCP server on http://%s:%d/mcp",
              me.username or me.first_name, me.id, settings.host, settings.port)
 
-    if not settings.auth_token:
-        log.warning("MCP_AUTH_TOKEN is not set: any local process that can reach port %d can read the account",
-                    settings.port)
+    # McpSettings.from_env refuses to start without a token, so auth_token is always set here.
     app = http_app(build_server(reader, exporter), allowed_hosts=settings.allowed_hosts,
                    allowed_origins=settings.allowed_origins, auth_token=settings.auth_token)
     server = _Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info",
@@ -133,4 +134,7 @@ async def _serve(settings: McpSettings, client: ReadOnlyTelegramClient) -> int:
 
 async def login(settings: TelegramSettings) -> int:
     """Interactive login that creates the MCP server's own session file."""
+    if not mcp_enabled():
+        log.error(DISABLED_MESSAGE)
+        return EXIT_CONFIG
     return await interactive_login(settings, lambda: create_readonly_client(settings, allow_login=True))

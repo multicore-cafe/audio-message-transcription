@@ -1,6 +1,12 @@
 import pytest
 
 from tests.fakes import FakeTelegram, FakeTranscriber, RecordingSleep
+
+
+@pytest.fixture(autouse=True)
+def _enable_mcp_by_default(monkeypatch):
+    """The MCP service is off unless TELEGRAM_MCP_ENABLED=1; tests enable it like a real run does."""
+    monkeypatch.setenv("TELEGRAM_MCP_ENABLED", "1")
 from transcription_bot.processor import VoiceProcessor
 from transcription_bot.work_queue import WorkQueue
 

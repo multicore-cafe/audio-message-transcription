@@ -17,23 +17,48 @@ from tests.test_mcp_server import HEADERS, INITIALIZE
 from transcription_bot.app import EXIT_CONFIG, EXIT_FAILURE, EXIT_OK
 from transcription_bot.config import ConfigError
 from transcription_bot.mcp_server import app as mcp_app
-from transcription_bot.mcp_server.config import McpSettings
+from transcription_bot.mcp_server.config import DISABLED_MESSAGE, McpSettings, mcp_enabled
 from transcription_bot.mcp_server.guard import GuardedMTProtoSender, ReadOnlyTelegramClient
 
 ENV = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "hash"}
+TOKEN = "test-token-" + "0" * 22
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
 def settings(tmp_path, **extra):
     return McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_EXPORT_DIR": str(tmp_path / "exports"),
-                                 **extra})
+                                 "MCP_AUTH_TOKEN": TOKEN, **extra})
 
 
 def test_defaults(tmp_path):
-    s = McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path)})
+    s = McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_AUTH_TOKEN": TOKEN})
     assert s.telegram.session_path == tmp_path / "telegram_mcp.session"
     assert (s.host, s.port) == ("127.0.0.1", 8790)
-    assert s.export_dir == Path("exports") and s.export_host_dir == Path("exports").absolute()
-    assert s.max_response_chars == 60_000 and s.media_max_bytes == 50 * 1024 * 1024
+    default_dir = Path("~/.local/share/telegram-mcp/exports").expanduser()
+    assert s.export_dir == default_dir and s.export_host_dir == default_dir.absolute()
+    assert s.max_response_chars == 16_000 and s.media_max_bytes == 50 * 1024 * 1024
+    assert s.auth_token == TOKEN
+
+
+def test_refuses_to_start_without_a_token(tmp_path):
+    with pytest.raises(ConfigError, match="refusing to start without a bearer token"):
+        McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path)})
+
+
+def test_token_comes_from_the_secret_file_first(tmp_path):
+    secret = tmp_path / "token"
+    secret.write_text("file-" + "f" * 30 + "\n", encoding="utf-8")
+    s = settings(tmp_path, MCP_AUTH_TOKEN_FILE=str(secret), MCP_AUTH_TOKEN="env-" + "e" * 30)
+    assert s.auth_token == "file-" + "f" * 30
+    with pytest.raises(ConfigError, match="at least 32 characters"):
+        settings(tmp_path, MCP_AUTH_TOKEN="short")
+    missing = tmp_path / "nope"
+    with pytest.raises(ConfigError, match="cannot read the secret file"):
+        settings(tmp_path, MCP_AUTH_TOKEN_FILE=str(missing))
+    empty = tmp_path / "empty"
+    empty.write_text("\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="is empty"):
+        settings(tmp_path, MCP_AUTH_TOKEN_FILE=str(empty))
 
 
 def test_overrides(tmp_path):
@@ -60,6 +85,26 @@ def test_invalid_values(tmp_path):
         settings(tmp_path, MCP_PORT="http")
     with pytest.raises(ConfigError):
         McpSettings.from_env({"DATA_DIR": str(tmp_path)})
+
+
+def test_the_enable_flag_only_accepts_exactly_one():
+    assert mcp_enabled({"TELEGRAM_MCP_ENABLED": "1"})
+    for value in ("", " ", "0", "01", "true", "yes", "2"):
+        assert not mcp_enabled({"TELEGRAM_MCP_ENABLED": value})
+
+
+async def test_serve_is_refused_while_the_service_is_disabled(tmp_path, caplog, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_MCP_ENABLED", raising=False)
+    caplog.set_level(logging.ERROR)
+    assert await mcp_app.serve(settings(tmp_path)) == EXIT_CONFIG
+    assert DISABLED_MESSAGE in caplog.text
+
+
+async def test_login_is_refused_while_the_service_is_disabled(tmp_path, caplog, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_MCP_ENABLED", raising=False)
+    caplog.set_level(logging.ERROR)
+    assert await mcp_app.login(settings(tmp_path).telegram) == EXIT_CONFIG
+    assert DISABLED_MESSAGE in caplog.text
 
 
 def test_clients_are_read_only_and_do_not_receive_updates(tmp_path):
@@ -142,7 +187,8 @@ async def wait_for_server(port):
     async with httpx2.AsyncClient() as http:
         for _ in range(100):
             try:
-                return await http.post(f"http://127.0.0.1:{port}/mcp", json=INITIALIZE, headers=HEADERS)
+                return await http.post(f"http://127.0.0.1:{port}/mcp", json=INITIALIZE,
+                                       headers={**HEADERS, **AUTH})
             except httpx2.TransportError:
                 await asyncio.sleep(0.05)
     raise AssertionError("server did not start")
@@ -156,6 +202,11 @@ async def test_serve_runs_http_until_sigterm(tmp_path, monkeypatch):
     task = asyncio.create_task(mcp_app.serve(dataclasses.replace(settings(tmp_path), port=port)))
     response = await wait_for_server(port)
     assert response.status_code == 200 and response.json()["result"]["serverInfo"]["name"] == "telegram-readonly"
+    async with httpx2.AsyncClient() as http:
+        no_token = await http.post(f"http://127.0.0.1:{port}/mcp", json=INITIALIZE, headers=HEADERS)
+        wrong_token = await http.post(f"http://127.0.0.1:{port}/mcp", json=INITIALIZE,
+                                      headers={**HEADERS, "Authorization": "Bearer wrong"})
+    assert no_token.status_code == 401 and wrong_token.status_code == 401
     assert fake.flood_sleep_threshold == 30
     os.kill(os.getpid(), signal.SIGTERM)
     assert await asyncio.wait_for(task, 15) == EXIT_OK

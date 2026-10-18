@@ -1,5 +1,6 @@
 # Host directory for MCP exports; the same value is mounted and reported by the tools.
-x-export-host-dir: &export-host-dir ${MCP_EXPORT_HOST_DIR:-${PWD}/exports}
+# Outside the repository, in a 0700 directory under the owner's home (see README "Access policy").
+x-export-host-dir: &export-host-dir ${MCP_EXPORT_HOST_DIR:-${HOME}/.local/share/telegram-mcp/exports}
 
 services:
   bot:
@@ -22,14 +23,16 @@ services:
         max-size: 10m
         max-file: "3"
 
-  # Read-only Telegram MCP server for AI clients, started only on request:
-  # `docker compose --profile mcp up -d` (or `docker compose up -d mcp`).
-  # It has its own Telegram session in its own volume and never sees the bot's session.
+  # Read-only Telegram MCP server for AI clients. OFF by default: nothing starts it (not even
+  # `docker compose up -d mcp`) until `.env` has TELEGRAM_MCP_ENABLED=1. Only 0 and 1 are
+  # valid; any other value makes `docker compose config` fail. It has its own Telegram session
+  # in its own volume and never sees the bot's session.
   mcp:
-    profiles: ["mcp"]
     build: .
     image: transcription-bot
     command: ["telegram-mcp", "serve"]
+    # 0 unless .env enables the service; Compose starts no container for a service scaled to 0.
+    scale: ${TELEGRAM_MCP_ENABLED:-0}
     restart: unless-stopped
     init: true
     env_file:
@@ -41,23 +44,35 @@ services:
       MCP_PORT: "8790"
       MCP_EXPORT_DIR: /exports
       MCP_EXPORT_HOST_DIR: *export-host-dir
+      # Same switch as the compose `scale`; the service also checks it itself.
+      TELEGRAM_MCP_ENABLED: ${TELEGRAM_MCP_ENABLED:-0}
+      # The bearer token comes from the secret below, never from .env.
+      MCP_AUTH_TOKEN_FILE: /run/secrets/mcp_token
     ports:
       # Loopback only.
       - "127.0.0.1:${MCP_PORT:-8790}:8790"
     volumes:
       - mcp-data:/data
-      # Must already exist (`mkdir -p exports`), so Docker never creates it as root.
+      # Must already exist (the install step creates it), so Docker never creates it as root.
       - type: bind
         source: *export-host-dir
         target: /exports
         bind:
           create_host_path: false
+    secrets:
+      - mcp_token
     stop_grace_period: 20s
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
+
+secrets:
+  # File secret: Docker bind-mounts the host file read-only, keeping its uid/gid/mode.
+  # The container runs as uid 1000, so a 0600 token file owned by the owner is readable.
+  mcp_token:
+    file: ${TELEGRAM_MCP_TOKEN_FILE:-${HOME}/.config/telegram-mcp/token}
 
 volumes:
   bot-data:

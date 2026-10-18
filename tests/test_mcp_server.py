@@ -11,7 +11,7 @@ from mcp.client.streamable_http import streamable_http_client
 from tests.mcp_fakes import FakeTelegramClient, basic_group, user
 from transcription_bot.mcp_server.export import Exporter
 from transcription_bot.mcp_server.reader import TelegramReader
-from transcription_bot.mcp_server.server import build_server, http_app
+from transcription_bot.mcp_server.server import ACCESS_POLICY, REFUSAL, build_server, http_app
 
 TOOLS = {
     "list_folders", "list_folder_chats", "list_dialogs", "get_chat_info", "list_forum_topics", "read_messages",
@@ -41,11 +41,20 @@ async def test_tools_are_listed_with_read_only_annotations(server):
     assert set(tools) == TOOLS
     for name, tool in tools.items():
         assert tool.description
+        # The soft access policy is at the start of every tool description so any model reads it.
+        assert tool.description.startswith(ACCESS_POLICY)
+        assert REFUSAL in tool.description
         assert tool.annotations.destructive_hint is False
         assert tool.annotations.read_only_hint is (name != "export_chat")  # export writes local files only
     schema = tools["read_messages"].input_schema
     assert schema["required"] == ["chat"]
     assert schema["properties"]["limit"]["maximum"] == 100
+    assert schema["properties"]["limit"]["default"] == 20
+
+
+async def test_instructions_carry_the_access_policy(server):
+    assert server.instructions.startswith(ACCESS_POLICY)
+    assert REFUSAL in server.instructions
 
 
 async def test_calling_tools_in_process(server):
