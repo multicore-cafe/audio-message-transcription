@@ -12,8 +12,6 @@ Bot and MCP server are separate Compose services with separate Telegram sessions
 
    ```sh
    cp .env.example .env    # fill in the values
-   docker compose up -d bot
-   docker compose logs -f bot
    ```
 
    `docker-compose.override.yml` (host-specific, git-ignored) joins the bot to the external
@@ -24,6 +22,8 @@ Bot and MCP server are separate Compose services with separate Telegram sessions
 
    ```sh
    docker compose run --rm bot transcription-bot login
+   docker compose up -d bot
+   docker compose logs -f bot
    ```
 
    Keep the session secret: it gives full access to the account. Stop the bot before logging in
