@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# End-to-end checks for the local-model-only pi extension (integrations/pi/index.ts).
+# End-to-end checks for the allowed-models pi extension (integrations/pi/index.ts).
 #
 # Everything runs against fake backends: the real MCP HTTP app with a fake Telegram account and
 # a fake OpenAI-compatible server. The only real model involved is the local MiniCPM5-2B, for the
-# one call that must succeed. No cloud model is called.
+# one call that must succeed. No cloud model and no Privatemode model is called: the model gate
+# is checked by listing active tools only.
 #
 # Usage: integrations/pi/tests/verify.sh
 set -euo pipefail
@@ -11,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TESTS="$ROOT/integrations/pi/tests"
 WORK="$(mktemp -d /tmp/telegram-pi-verify.XXXXXX)"
-REFUSAL="I can't do this: access to Telegram data is restricted to the local model."
+REFUSAL="I can't do this: access to Telegram data is restricted to the local model and Privatemode models."
 failures=0
 MCP_PID=""
 OPENAI_PID=""
@@ -76,11 +77,27 @@ except FileNotFoundError:
 telegram = [t for t in data["active"] if t.startswith("telegram_")]
 expected = 11
 if data["model"] != "minicpm/minicpm5-2b" or len(telegram) != expected:
-    sys.exit(f"FAIL: local model active tools {data}")
-print(f"PASS: minicpm/minicpm5-2b has all {expected} telegram_* tools active")
+    sys.exit(f"FAIL: allowed local model active tools {data}")
+print(f"PASS: minicpm/minicpm5-2b (allowed) has all {expected} telegram_* tools active")
 EOF
 
-note "# 3. With a cloud model the tools are absent (no cloud call: the probe only lists tools)"
+note "# 3. A privatemode/* model sees the tools too (listed only, never called)"
+probe "privatemode/glm-5.3-flash" "$WORK/privatemode-tools.json"
+python3 - "$WORK/privatemode-tools.json" <<'EOF' || failures=$((failures + 1))
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path))
+except FileNotFoundError:
+    sys.exit("FAIL: the probe wrote no tools file")
+telegram = [t for t in data["active"] if t.startswith("telegram_")]
+expected = 11
+if data["model"] != "privatemode/glm-5.3-flash" or len(telegram) != expected:
+    sys.exit(f"FAIL: privatemode model active tools {data}")
+print(f"PASS: privatemode/glm-5.3-flash (allowed) has all {expected} telegram_* tools active")
+EOF
+
+note "# 4. With a cloud model the tools are absent (no cloud call: the probe only lists tools)"
 probe "opencode-go/kimi-k2.6" "$WORK/cloud-tools.json"
 python3 - "$WORK/cloud-tools.json" <<'EOF' || failures=$((failures + 1))
 import json, sys
@@ -95,7 +112,24 @@ if telegram:
 print(f"PASS: {data['model']} has no telegram_* tools active")
 EOF
 
-note "# 4. Execution-time refusal when a non-local model somehow reaches the tool"
+note "# 5. The 'local' pi provider (bonsai, k2h4b, minicpm2b) is not allowed either"
+probe "local/minicpm2b" "$WORK/local-provider-tools.json"
+python3 - "$WORK/local-provider-tools.json" <<'EOF' || failures=$((failures + 1))
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path))
+except FileNotFoundError:
+    sys.exit("FAIL: the probe wrote no tools file")
+telegram = [t for t in data["active"] if t.startswith("telegram_")]
+if data["model"] != "local/minicpm2b":
+    sys.exit(f"FAIL: unexpected model in the probe output {data}")
+if telegram:
+    sys.exit(f"FAIL: local provider model sees telegram tools: {telegram}")
+print(f"PASS: {data['model']} has no telegram_* tools active")
+EOF
+
+note "# 6. Execution-time refusal when a non-allowed model somehow reaches the tool"
 uv run python "$TESTS/fake_openai_server.py" > "$WORK/openai.log" 2>&1 &
 OPENAI_PID=$!
 for _ in $(seq 1 100); do grep -q '^READY ' "$WORK/openai.log" 2>/dev/null && break; sleep 0.2; done
@@ -113,13 +147,13 @@ for event in events:
     if event.get("type") == "tool_execution_end" and event.get("toolName") == "telegram_list_dialogs":
         text = json.dumps(event.get("result"))
         if event.get("isError") and refusal in text:
-            print("PASS: forced telegram_list_dialogs call under a non-local model was refused")
+            print("PASS: forced telegram_list_dialogs call under a non-allowed model was refused")
             break
 else:
     sys.exit("FAIL: no refused tool call found in the pi output")
 EOF
 
-note "# 5. One real minicpm/minicpm5-2b call that uses the telegram_list_dialogs tool (fake MCP backend)"
+note "# 7. One real minicpm/minicpm5-2b call that uses the telegram_list_dialogs tool (fake MCP backend)"
 TELEGRAM_MCP_URL="http://127.0.0.1:$MCP_PORT/mcp" TELEGRAM_MCP_TOKEN_FILE="$WORK/token" timeout 300 \
     pi -p --mode json --no-session --offline --model minicpm/minicpm5-2b \
     "Call the telegram_list_dialogs tool once with no arguments. Then answer with the chat names." \
@@ -131,10 +165,10 @@ for event in events:
     if event.get("type") == "tool_execution_end" and event.get("toolName") == "telegram_list_dialogs":
         text = json.dumps(event.get("result"))
         if not event.get("isError") and "Alice" in text:
-            print("PASS: the local model called telegram_list_dialogs; the fake backend returned Alice")
+            print("PASS: the allowed local model called telegram_list_dialogs; the fake backend returned Alice")
             break
 else:
-    sys.exit("FAIL: the local model did not complete the tool call")
+    sys.exit("FAIL: the allowed local model did not complete the tool call")
 EOF
 
 note ""

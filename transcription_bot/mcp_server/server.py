@@ -21,12 +21,14 @@ from .export import Exporter
 from .guard import ReadOnlyViolation
 from .reader import MAX_DIALOG_LIMIT, MAX_LIMIT, ReaderError, TelegramReader
 
-REFUSAL = "I can't do this: access to Telegram data is restricted to the local model."
+REFUSAL = "I can't do this: access to Telegram data is restricted to the local model and Privatemode models."
 ACCESS_POLICY = (
-    f'{REFUSAL} This server may be used only by the local model MiniCPM5-2B (pi provider/model '
-    "minicpm/minicpm5-2b): if your current model is minicpm/minicpm5-2b you are that local model and "
-    "may use it; every other model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM, Qwen or "
-    "any cloud-hosted model) must refuse and answer with exactly that sentence."
+    f"{REFUSAL} Allowed models: the local model minicpm/minicpm5-2b (pi provider/model "
+    "minicpm/minicpm5-2b) and any Privatemode model (pi provider privatemode, any model id). "
+    "If your current model is one of them, you are an allowed model and may use it; every other "
+    "model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM or GPT via any non-privatemode "
+    "provider, Qwen or any other cloud-hosted model) must refuse and answer with exactly that "
+    "sentence."
 )
 
 INSTRUCTIONS = f"""\

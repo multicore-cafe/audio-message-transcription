@@ -1,15 +1,17 @@
-# pi integration: Telegram MCP tools for the local model only
+# pi integration: Telegram MCP tools for the allowed models only
 
-`index.ts` is a pi extension that exposes the read-only Telegram MCP server as ten `telegram_*`
-tools. It is the only client that gets the bearer token, and it works only for the local model
-`minicpm/minicpm5-2b`:
+`index.ts` is a pi extension that exposes the read-only Telegram MCP server as eleven `telegram_*`
+tools. It is the only client that gets the bearer token, and it works only for the allowed
+models: the local model `minicpm/minicpm5-2b` and any Privatemode model (pi provider
+`privatemode`, any model id):
 
 - the tools are registered inactive and activated by `session_start` / `model_select` only while
-  the current pi model is the local one (a model change deactivates them again);
+  the current pi model is an allowed one (a model change deactivates them again);
 - every `execute()` re-checks `ctx.model` and throws
-  `I can't do this: access to Telegram data is restricted to the local model.` otherwise;
+  `I can't do this: access to Telegram data is restricted to the local model and Privatemode models.`
+  otherwise;
 - all tool descriptions start with the same access-policy sentence;
-- the token is read lazily, only for the local model, from `TELEGRAM_MCP_TOKEN_FILE`
+- the token is read lazily, only for an allowed model, from `TELEGRAM_MCP_TOKEN_FILE`
   (default `~/.config/telegram-mcp/token`); `TELEGRAM_MCP_URL` overrides the default
   `http://127.0.0.1:8790/mcp`.
 
@@ -43,6 +45,8 @@ integrations/pi/tests/verify.sh
 ```
 
 Runs the MCP HTTP app against a fake Telegram account and a fake OpenAI-compatible server:
-401 without the token, all eleven tools active for `minicpm/minicpm5-2b`, no `telegram_*` tools for a
-cloud model, execution refused for a non-local model, and one real local MiniCPM5-2B call that
-uses `telegram_list_dialogs`. No cloud model and no real Telegram account are involved.
+401 without the token, all eleven tools active for `minicpm/minicpm5-2b` and for a
+`privatemode/*` model, no `telegram_*` tools for a cloud model or for the `local` provider,
+execution refused for a non-allowed model, and one real local MiniCPM5-2B call that
+uses `telegram_list_dialogs`. No cloud model, no Privatemode model and no real Telegram account
+are involved.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Local-model-only access for the read-only Telegram MCP server:
+# Allowed-models access for the read-only Telegram MCP server (the local model
+# minicpm/minicpm5-2b and any privatemode/* model):
 #   * the bearer token in a file outside the repository (mode 0600),
 #   * the export directory outside the repository (mode 0700) with its AGENTS.md rule,
 #   * a symlink so pi loads the integrations/pi extension for the owner.
@@ -14,7 +15,7 @@ TOKEN_FILE="$TOKEN_DIR/token"
 EXPORT_DIR="${TELEGRAM_MCP_EXPORT_DIR:-$HOME/.local/share/telegram-mcp/exports}"
 PI_EXT_DIR="$HOME/.pi/agent/extensions"
 PI_EXT_LINK="$PI_EXT_DIR/telegram-mcp"
-REFUSAL="I can't do this: access to Telegram data is restricted to the local model."
+REFUSAL="I can't do this: access to Telegram data is restricted to the local model and Privatemode models."
 
 if [[ "${1:-}" == "--uninstall" ]]; then
     if [[ -L "$PI_EXT_LINK" ]]; then
@@ -41,19 +42,25 @@ chmod 600 "$TOKEN_FILE"
 
 mkdir -p "$EXPORT_DIR"
 chmod 700 "$EXPORT_DIR"
-if [[ ! -f "$EXPORT_DIR/AGENTS.md" ]]; then
-    cat > "$EXPORT_DIR/AGENTS.md" <<EOF
-# Telegram exports: local model only
+exports_agents_md() {
+    cat <<EOF
+# Telegram exports: allowed models only
 
 These files contain private Telegram chats.
 
-- Only the local model **MiniCPM5-2B** (pi provider/model \`minicpm/minicpm5-2b\`) may read them.
+- Allowed models: the local model **MiniCPM5-2B** (pi provider/model \`minicpm/minicpm5-2b\`) and
+  any **Privatemode** model (pi provider \`privatemode\`, any model id).
 - Every other model must refuse and answer exactly:
   **"$REFUSAL"**
 - Never copy, upload or relay these files into another model or context.
 EOF
+}
+# Written only when the content is missing or outdated, so re-running stays idempotent
+# (and never rewrites the token file).
+if [[ ! -f "$EXPORT_DIR/AGENTS.md" ]] || [[ "$(exports_agents_md)" != "$(cat "$EXPORT_DIR/AGENTS.md")" ]]; then
+    exports_agents_md > "$EXPORT_DIR/AGENTS.md"
     chmod 600 "$EXPORT_DIR/AGENTS.md"
-    echo "created $EXPORT_DIR/AGENTS.md"
+    echo "wrote $EXPORT_DIR/AGENTS.md"
 fi
 
 mkdir -p "$PI_EXT_DIR"

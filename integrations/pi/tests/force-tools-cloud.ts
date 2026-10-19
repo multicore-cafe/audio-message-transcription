@@ -2,7 +2,7 @@
  * Test-only pi extension: a fake "cloud" provider plus forced activation of one Telegram tool.
  *
  * Proves the extension's execution-time model check: even if the Telegram tool is somehow
- * active under a non-local model, the call is refused. The fake OpenAI-compatible backend
+ * active under a non-allowed model, the call is refused. The fake OpenAI-compatible backend
  * (fake_openai_server.py) returns a tool call, so no cloud model is involved.
  */
 

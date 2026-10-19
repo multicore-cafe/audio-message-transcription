@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import re
 from pathlib import Path
 
 import httpx2
@@ -57,6 +58,37 @@ async def test_tools_are_listed_with_read_only_annotations(server):
 async def test_instructions_carry_the_access_policy(server):
     assert server.instructions.startswith(ACCESS_POLICY)
     assert REFUSAL in server.instructions
+
+
+def test_policy_wording_is_shared_everywhere():
+    """The pi extension, the shell scripts and the docs carry the very same policy wording."""
+
+    root = Path(__file__).resolve().parents[1]
+    ts = (root / "integrations" / "pi" / "index.ts").read_text()
+    refusal = re.search(r'export const REFUSAL = "([^"]*)";', ts)
+    assert refusal, "REFUSAL not found in integrations/pi/index.ts"
+    assert refusal.group(1) == REFUSAL
+    block = re.search(r"const ACCESS_POLICY =(?P<body>.*?)\nconst ", ts, re.S)
+    assert block, "ACCESS_POLICY not found in integrations/pi/index.ts"
+    parts = re.findall(r'`([^`]*)`|"([^"]*)"', block.group("body"))
+    assert "".join(a or b for a, b in parts).replace("${REFUSAL}", REFUSAL) == ACCESS_POLICY
+    for rel in ("integrations/pi/tests/verify.sh", "integrations/pi/install.sh"):
+        assert f'REFUSAL="{REFUSAL}"' in (root / rel).read_text(), rel
+    for rel in ("AGENTS.md", "CLAUDE.md", "README.md", "integrations/pi/README.md"):
+        text = " ".join((root / rel).read_text().split())
+        assert REFUSAL in text, rel
+    # The allowed-models list itself, not just the refusal sentence.
+    fragments = ("minicpm/minicpm5-2b",
+                 "any Privatemode model (pi provider privatemode, any model id)")
+    policy = " ".join(ACCESS_POLICY.split())
+    install = (root / "integrations" / "pi" / "install.sh").read_text()
+    for rel in ("AGENTS.md", "CLAUDE.md", "README.md", "integrations/pi/README.md"):
+        text = " ".join((root / rel).read_text().replace("`", "").replace("**", "").split())
+        for fragment in fragments:
+            assert fragment in text, (rel, fragment)
+    for fragment in fragments:
+        assert fragment in policy
+    assert "any **Privatemode** model (pi provider \\`privatemode\\`, any model id)" in install
 
 
 async def test_calling_tools_in_process(server):

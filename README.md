@@ -66,13 +66,17 @@ Only the value `1` enables it; absent/`0` keeps the service scaled to 0 and make
 
 ### Access policy
 
-- Only the local model **MiniCPM5-2B** (pi provider/model `minicpm/minicpm5-2b`) may use the MCP
-  server. The pi extension in [`integrations/pi/`](integrations/pi/) activates its `telegram_*`
-  tools only for that model and re-checks the model before every call; every other model must
-  answer **"I can't do this: access to Telegram data is restricted to the local model."** The
-  rules agents must follow are in [AGENTS.md](AGENTS.md).
-- Use it from a bb thread with provider `pi` and model `minicpm/minicpm5-2b`; the Telegram tools
-  appear automatically. Other models never see them.
+- Allowed models: the local model **MiniCPM5-2B** (pi provider/model `minicpm/minicpm5-2b`) and
+  any **Privatemode** model (pi provider `privatemode`, any model id). The pi extension in
+  [`integrations/pi/`](integrations/pi/) activates its `telegram_*` tools only for those models and
+  re-checks the model before every call; every other model (Claude, GPT/Codex, DeepSeek, Gemini,
+  Kimi, MiMo, GLM or GPT via any non-privatemode provider, Qwen or any other cloud-hosted model)
+  must answer exactly:
+  **"I can't do this: access to Telegram data is restricted to the local model and Privatemode models."**
+  The rules agents must follow are in [AGENTS.md](AGENTS.md).
+- Use it from a bb thread with provider `pi` and model `minicpm/minicpm5-2b` or any
+  `privatemode/*` model; the Telegram tools appear automatically. Other models never see them
+  (the `local` provider — `local/bonsai`, `local/k2h4b`, `local/minicpm2b` — is not allowed).
 - The bearer token is a file outside the repository, `~/.config/telegram-mcp/token` (mode 0600),
   mounted into the container as a Docker secret; it is never stored in `.env`. Rotate it with:
   `openssl rand -hex 32 > ~/.config/telegram-mcp/token && docker compose restart mcp`.

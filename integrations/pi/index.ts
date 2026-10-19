@@ -1,10 +1,11 @@
 /**
- * Pi extension: read-only Telegram MCP tools for the local model only.
+ * Pi extension: read-only Telegram MCP tools for the allowed models only.
  *
  * The tools proxy to the read-only Telegram MCP server (default http://127.0.0.1:8790/mcp)
- * with its bearer token. They are active only while the current pi model is the local
- * MiniCPM5-2B (`minicpm/minicpm5-2b`); every other model never sees them, and every call
- * re-checks the model and refuses if it changed.
+ * with its bearer token. They are active only while the current pi model is an allowed one:
+ * the local MiniCPM5-2B (`minicpm/minicpm5-2b`) or any Privatemode model (pi provider
+ * `privatemode`, any model id); every other model never sees them, and every call re-checks
+ * the model and refuses if it changed.
  *
  * Install (from the repository root):
  *     integrations/pi/install.sh
@@ -19,16 +20,19 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-export const REFUSAL = "I can't do this: access to Telegram data is restricted to the local model.";
+export const REFUSAL = "I can't do this: access to Telegram data is restricted to the local model and Privatemode models.";
 // Keep this in sync with transcription_bot/mcp_server/server.py.
 const ACCESS_POLICY =
-	`${REFUSAL} This server may be used only by the local model MiniCPM5-2B (pi provider/model ` +
-	"minicpm/minicpm5-2b): if your current model is minicpm/minicpm5-2b you are that local model and " +
-	"may use it; every other model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM, Qwen or " +
-	"any cloud-hosted model) must refuse and answer with exactly that sentence.";
+	`${REFUSAL} Allowed models: the local model minicpm/minicpm5-2b (pi provider/model ` +
+	"minicpm/minicpm5-2b) and any Privatemode model (pi provider privatemode, any model id). " +
+	"If your current model is one of them, you are an allowed model and may use it; every other " +
+	"model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM or GPT via any non-privatemode " +
+	"provider, Qwen or any other cloud-hosted model) must refuse and answer with exactly that " +
+	"sentence.";
 
 const LOCAL_PROVIDER = "minicpm";
 const LOCAL_MODEL_ID = "minicpm5-2b";
+const PRIVATEMODE_PROVIDER = "privatemode";
 const DEFAULT_URL = "http://127.0.0.1:8790/mcp";
 const DEFAULT_TOKEN_FILE = join(homedir(), ".config", "telegram-mcp", "token");
 
@@ -212,7 +216,11 @@ const TOOLS: TelegramTool[] = [
 
 const TOOL_NAMES = TOOLS.map((tool) => `telegram_${tool.suffix}`);
 
-function isLocalModel(ctx: ExtensionContext | ExtensionToolContext): boolean {
+// Allowed models: the exact minicpm/minicpm5-2b pair and any model of the privatemode provider.
+function isAllowedModel(ctx: ExtensionContext | ExtensionToolContext): boolean {
+	if (ctx.model?.provider === PRIVATEMODE_PROVIDER) {
+		return true;
+	}
 	return ctx.model?.provider === LOCAL_PROVIDER && ctx.model?.id === LOCAL_MODEL_ID;
 }
 
@@ -292,7 +300,7 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 			label: tool.label,
 			description: `${ACCESS_POLICY} ${tool.summary}`,
 			parameters: tool.parameters,
-			defaultActive: false, // activated only for the local model (see syncActiveTools)
+			defaultActive: false, // activated only for an allowed model (see syncActiveTools)
 			annotations: {
 				readOnlyHint: tool.readOnly,
 				destructiveHint: false,
@@ -300,7 +308,7 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 				openWorldHint: true,
 			},
 			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				if (!isLocalModel(ctx)) {
+				if (!isAllowedModel(ctx)) {
 					throw new Error(REFUSAL);
 				}
 				const text = await callMcp(tool.suffix, params, signal);
@@ -311,7 +319,7 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 
 	const syncActiveTools = (ctx: ExtensionContext): void => {
 		const active = new Set(pi.getActiveTools());
-		const wanted = isLocalModel(ctx);
+		const wanted = isAllowedModel(ctx);
 		let changed = false;
 		for (const name of TOOL_NAMES) {
 			if (wanted && !active.has(name)) {
