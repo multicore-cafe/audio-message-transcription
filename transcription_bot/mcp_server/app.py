@@ -89,7 +89,7 @@ async def _serve(settings: McpSettings, client: ReadOnlyTelegramClient) -> int:
              me.username or me.first_name, me.id, settings.host, settings.port)
 
     # McpSettings.from_env refuses to start without a token, so auth_token is always set here.
-    app = http_app(build_server(reader, exporter), allowed_hosts=settings.allowed_hosts,
+    app = http_app(build_server(reader, exporter, settings.allow_list), allowed_hosts=settings.allowed_hosts,
                    allowed_origins=settings.allowed_origins, auth_token=settings.auth_token)
     server = _Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info",
                                     access_log=False, lifespan="on"))

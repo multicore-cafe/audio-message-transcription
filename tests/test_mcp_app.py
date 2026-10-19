@@ -23,21 +23,31 @@ from transcription_bot.mcp_server.guard import GuardedMTProtoSender, ReadOnlyTel
 ENV = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "hash"}
 TOKEN = "test-token-" + "0" * 22
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
+ALLOWED_TEXT = "oneprovider/my-model\nsomeprovider/team/turbo\notherprovider/*\n"
+
+
+def write_allowlist(tmp_path):
+    path = tmp_path / "allowed-models"
+    path.write_text(ALLOWED_TEXT, encoding="utf-8")
+    return path
 
 
 def settings(tmp_path, **extra):
+    extra.setdefault("MCP_ALLOWED_MODELS_FILE", str(write_allowlist(tmp_path)))
     return McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_EXPORT_DIR": str(tmp_path / "exports"),
                                  "MCP_AUTH_TOKEN": TOKEN, **extra})
 
 
 def test_defaults(tmp_path):
-    s = McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_AUTH_TOKEN": TOKEN})
+    s = McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_AUTH_TOKEN": TOKEN,
+                              "MCP_ALLOWED_MODELS_FILE": str(write_allowlist(tmp_path))})
     assert s.telegram.session_path == tmp_path / "telegram_mcp.session"
     assert (s.host, s.port) == ("127.0.0.1", 8790)
     default_dir = Path("~/.local/share/telegram-mcp/exports").expanduser()
     assert s.export_dir == default_dir and s.export_host_dir == default_dir.absolute()
     assert s.max_response_chars == 16_000 and s.media_max_bytes == 50 * 1024 * 1024
     assert s.auth_token == TOKEN
+    assert s.allow_list.is_allowed("someprovider", "team/turbo")
 
 
 def test_refuses_to_start_without_a_token(tmp_path):
@@ -59,6 +69,18 @@ def test_token_comes_from_the_secret_file_first(tmp_path):
     empty.write_text("\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="is empty"):
         settings(tmp_path, MCP_AUTH_TOKEN_FILE=str(empty))
+
+
+@pytest.mark.parametrize("content", [None, "", "\n# only comments\n", "not-a-provider-model\n", "*/anything\n"])
+def test_refuses_to_start_without_a_valid_allow_list(tmp_path, content):
+    if content is None:
+        path = tmp_path / "missing-allowed-models"
+    else:
+        path = tmp_path / "allowed-models"
+        path.write_text(content, encoding="utf-8")
+    with pytest.raises(ConfigError, match="allowed-models"):
+        McpSettings.from_env({**ENV, "DATA_DIR": str(tmp_path), "MCP_AUTH_TOKEN": TOKEN,
+                              "MCP_ALLOWED_MODELS_FILE": str(path)})
 
 
 def test_overrides(tmp_path):

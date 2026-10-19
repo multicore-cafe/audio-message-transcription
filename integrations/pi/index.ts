@@ -1,11 +1,14 @@
 /**
- * Pi extension: read-only Telegram MCP tools for the allowed models only.
+ * Pi extension: read-only Telegram MCP tools for allow-listed models only.
  *
  * The tools proxy to the read-only Telegram MCP server (default http://127.0.0.1:8790/mcp)
- * with its bearer token. They are active only while the current pi model is an allowed one:
- * the local MiniCPM5-2B (`minicpm/minicpm5-2b`) or any Privatemode model (pi provider
- * `privatemode`, any model id); every other model never sees them, and every call re-checks
- * the model and refuses if it changed.
+ * with its bearer token. They are active only while the current pi provider/model is listed in
+ * the allowed-models file (default ~/.config/telegram-mcp/allowed-models, override with
+ * TELEGRAM_MCP_ALLOWED_MODELS_FILE); every other model never sees them, and every call
+ * re-reads the file and refuses if the model is not allowed.
+ *
+ * Fail closed: a missing, unreadable, empty or invalid file allows no model at all and every
+ * call is refused with a message naming the file.
  *
  * Install (from the repository root):
  *     integrations/pi/install.sh
@@ -20,19 +23,13 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-export const REFUSAL = "I can't do this: access to Telegram data is restricted to the local model and Privatemode models.";
-// Keep this in sync with transcription_bot/mcp_server/server.py.
-const ACCESS_POLICY =
-	`${REFUSAL} Allowed models: the local model minicpm/minicpm5-2b (pi provider/model ` +
-	"minicpm/minicpm5-2b) and any Privatemode model (pi provider privatemode, any model id). " +
-	"If your current model is one of them, you are an allowed model and may use it; every other " +
-	"model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM or GPT via any non-privatemode " +
-	"provider, Qwen or any other cloud-hosted model) must refuse and answer with exactly that " +
-	"sentence.";
+export const REFUSAL = "I can't do this: access to Telegram data is restricted to the models allowed by the owner.";
+// Keep the policy wording in sync with transcription_bot/mcp_server/allowlist.py.
+const CREATE_HINT =
+	"Create it with `integrations/pi/install.sh --allow <provider/model>` (repeatable), or " +
+	"write one entry per line, e.g. `someprovider/*`.";
 
-const LOCAL_PROVIDER = "minicpm";
-const LOCAL_MODEL_ID = "minicpm5-2b";
-const PRIVATEMODE_PROVIDER = "privatemode";
+const DEFAULT_ALLOWED_MODELS_FILE = join(homedir(), ".config", "telegram-mcp", "allowed-models");
 const DEFAULT_URL = "http://127.0.0.1:8790/mcp";
 const DEFAULT_TOKEN_FILE = join(homedir(), ".config", "telegram-mcp", "token");
 
@@ -216,12 +213,96 @@ const TOOLS: TelegramTool[] = [
 
 const TOOL_NAMES = TOOLS.map((tool) => `telegram_${tool.suffix}`);
 
-// Allowed models: the exact minicpm/minicpm5-2b pair and any model of the privatemode provider.
-function isAllowedModel(ctx: ExtensionContext | ExtensionToolContext): boolean {
-	if (ctx.model?.provider === PRIVATEMODE_PROVIDER) {
-		return true;
+interface AllowList {
+	entries: string[];
+	providers: Set<string>;
+}
+
+// The policy wording is generated from the allow-list; keep it in sync with
+// transcription_bot/mcp_server/allowlist.py (access_policy).
+export function accessPolicy(models: string): string {
+	return (
+		`${REFUSAL} Allowed models: ${models}. Only a model whose pi provider/model matches ` +
+		"this list may use the Telegram tools; every other model must refuse and answer with exactly " +
+		"that sentence."
+	);
+}
+
+function noAllowListPolicy(file: string): string {
+	return (
+		`${REFUSAL} No valid allowed-models file is present at ${file}; no model may use the ` +
+		"Telegram tools until one is created with valid entries."
+	);
+}
+
+function allowedModelsFile(): string {
+	return (process.env.TELEGRAM_MCP_ALLOWED_MODELS_FILE || DEFAULT_ALLOWED_MODELS_FILE).replace(/^~(?=\/|$)/, homedir());
+}
+
+function parseAllowList(text: string, source: string): AllowList {
+	const entries: string[] = [];
+	const providers = new Set<string>();
+	const seen = new Set<string>();
+	text.split(/\r?\n/).forEach((raw, index) => {
+		const line = raw.trim();
+		if (!line || line.startsWith("#")) {
+			return;
+		}
+		const location = `${source}: line ${index + 1}`;
+		if (!line.includes("/") || /\s/.test(line)) {
+			throw new Error(`${location}: expected \`provider/model-id\` or \`provider/*\`, got ${JSON.stringify(line)}`);
+		}
+		const slash = line.indexOf("/");
+		const provider = line.slice(0, slash);
+		const model = line.slice(slash + 1);
+		if (!provider || !model || provider === "*") {
+			throw new Error(`${location}: expected \`provider/model-id\` or \`provider/*\`, got ${JSON.stringify(line)}`);
+		}
+		const entry = model === "*" ? `${provider}/*` : `${provider}/${model}`;
+		if (seen.has(entry)) {
+			return;
+		}
+		seen.add(entry);
+		entries.push(entry);
+		if (model === "*") {
+			providers.add(provider);
+		}
+	});
+	if (entries.length === 0) {
+		throw new Error(`${source}: no allowed models configured; nothing may use the Telegram MCP. ${CREATE_HINT}`);
 	}
-	return ctx.model?.provider === LOCAL_PROVIDER && ctx.model?.id === LOCAL_MODEL_ID;
+	return { entries, providers };
+}
+
+function loadAllowList(): AllowList {
+	const file = allowedModelsFile();
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch (error) {
+		throw new Error(
+			`cannot read the allowed-models file ${file}: ${(error as Error).message}. ${CREATE_HINT} ` +
+				"Without it no model may use the Telegram MCP.",
+		);
+	}
+	return parseAllowList(text, file);
+}
+
+function isAllowedModel(ctx: ExtensionContext | ExtensionToolContext, allowList: AllowList): boolean {
+	const provider = ctx.model?.provider;
+	const id = ctx.model?.id;
+	if (!provider || !id) {
+		return false;
+	}
+	return allowList.providers.has(provider) || allowList.entries.includes(`${provider}/${id}`);
+}
+
+function refreshedAllowList(): AllowList | null {
+	try {
+		return loadAllowList();
+	} catch {
+		return null;
+	}
 }
 
 function token(): string {
@@ -294,11 +375,15 @@ async function callMcp(name: string, args: unknown, signal?: AbortSignal): Promi
 }
 
 export default function telegramMcpExtension(pi: ExtensionAPI): void {
+	// The description reflects the list as loaded when the extension starts; the actual gate is
+	// re-read from the file on every session_start/model_select and again at execute time.
+	const initial = refreshedAllowList();
+	const policy = initial ? accessPolicy(initial.entries.join(", ")) : noAllowListPolicy(allowedModelsFile());
 	for (const tool of TOOLS) {
 		pi.registerTool({
 			name: `telegram_${tool.suffix}`,
 			label: tool.label,
-			description: `${ACCESS_POLICY} ${tool.summary}`,
+			description: `${policy} ${tool.summary}`,
 			parameters: tool.parameters,
 			defaultActive: false, // activated only for an allowed model (see syncActiveTools)
 			annotations: {
@@ -308,7 +393,13 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 				openWorldHint: true,
 			},
 			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				if (!isAllowedModel(ctx)) {
+				let allowList: AllowList;
+				try {
+					allowList = loadAllowList();
+				} catch (error) {
+					throw new Error((error as Error).message);
+				}
+				if (!isAllowedModel(ctx, allowList)) {
 					throw new Error(REFUSAL);
 				}
 				const text = await callMcp(tool.suffix, params, signal);
@@ -318,8 +409,9 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 	}
 
 	const syncActiveTools = (ctx: ExtensionContext): void => {
+		const allowList = refreshedAllowList();
 		const active = new Set(pi.getActiveTools());
-		const wanted = isAllowedModel(ctx);
+		const wanted = allowList !== null && isAllowedModel(ctx, allowList);
 		let changed = false;
 		for (const name of TOOL_NAMES) {
 			if (wanted && !active.has(name)) {

@@ -11,14 +11,20 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from tests.mcp_fakes import FakeTelegramClient, basic_group, user
+from transcription_bot.mcp_server.allowlist import REFUSAL, AllowList, access_policy
 from transcription_bot.mcp_server.export import Exporter
 from transcription_bot.mcp_server.reader import TelegramReader
-from transcription_bot.mcp_server.server import ACCESS_POLICY, REFUSAL, build_server, http_app
+from transcription_bot.mcp_server.server import build_server, http_app
 
 TOOLS = {
     "list_folders", "list_folder_chats", "list_dialogs", "get_chat_info", "list_forum_topics", "read_messages",
     "get_messages", "search_messages", "search_global", "export_chat", "export_search",
 }
+
+# Neutral test entries: an exact provider/model, a model id containing `/`, and a wildcard.
+ALLOWED_TEXT = "oneprovider/my-model\nsomeprovider/team/turbo\notherprovider/*\n"
+ALLOW_LIST = AllowList.parse(ALLOWED_TEXT, source="test")
+POLICY = access_policy(ALLOW_LIST)
 
 
 @pytest.fixture
@@ -29,7 +35,7 @@ def server(tmp_path):
     for i in range(1, 6):
         client.add_message(group, i, f"hello {i}", sender=alice)
     reader = TelegramReader(client)
-    return build_server(reader, Exporter(reader, tmp_path, tmp_path))
+    return build_server(reader, Exporter(reader, tmp_path, tmp_path), ALLOW_LIST)
 
 
 def payload(result):
@@ -44,7 +50,7 @@ async def test_tools_are_listed_with_read_only_annotations(server):
     for name, tool in tools.items():
         assert tool.description
         # The soft access policy is at the start of every tool description so any model reads it.
-        assert tool.description.startswith(ACCESS_POLICY)
+        assert tool.description.startswith(POLICY)
         assert REFUSAL in tool.description
         assert tool.annotations.destructive_hint is False
         # The exports write local files only, so they are not read-only tools.
@@ -56,39 +62,33 @@ async def test_tools_are_listed_with_read_only_annotations(server):
 
 
 async def test_instructions_carry_the_access_policy(server):
-    assert server.instructions.startswith(ACCESS_POLICY)
+    assert server.instructions.startswith(POLICY)
     assert REFUSAL in server.instructions
 
 
 def test_policy_wording_is_shared_everywhere():
-    """The pi extension, the shell scripts and the docs carry the very same policy wording."""
+    """The pi extension and Python generate the same policy from the same allow-list."""
 
     root = Path(__file__).resolve().parents[1]
     ts = (root / "integrations" / "pi" / "index.ts").read_text()
     refusal = re.search(r'export const REFUSAL = "([^"]*)";', ts)
     assert refusal, "REFUSAL not found in integrations/pi/index.ts"
     assert refusal.group(1) == REFUSAL
-    block = re.search(r"const ACCESS_POLICY =(?P<body>.*?)\nconst ", ts, re.S)
-    assert block, "ACCESS_POLICY not found in integrations/pi/index.ts"
+    block = re.search(r"export function accessPolicy\(models: string\): string \{(?P<body>.*?)\n\}", ts, re.DOTALL)
+    assert block, "accessPolicy not found in integrations/pi/index.ts"
     parts = re.findall(r'`([^`]*)`|"([^"]*)"', block.group("body"))
-    assert "".join(a or b for a, b in parts).replace("${REFUSAL}", REFUSAL) == ACCESS_POLICY
+    generated = (
+        "".join(a or b for a, b in parts)
+        .replace("${REFUSAL}", REFUSAL)
+        .replace("${models}", ALLOW_LIST.models)
+    )
+    assert generated == POLICY
+    # Every place that states the policy carries the fixed refusal sentence.
     for rel in ("integrations/pi/tests/verify.sh", "integrations/pi/install.sh"):
         assert f'REFUSAL="{REFUSAL}"' in (root / rel).read_text(), rel
     for rel in ("AGENTS.md", "CLAUDE.md", "README.md", "integrations/pi/README.md"):
         text = " ".join((root / rel).read_text().split())
         assert REFUSAL in text, rel
-    # The allowed-models list itself, not just the refusal sentence.
-    fragments = ("minicpm/minicpm5-2b",
-                 "any Privatemode model (pi provider privatemode, any model id)")
-    policy = " ".join(ACCESS_POLICY.split())
-    install = (root / "integrations" / "pi" / "install.sh").read_text()
-    for rel in ("AGENTS.md", "CLAUDE.md", "README.md", "integrations/pi/README.md"):
-        text = " ".join((root / rel).read_text().replace("`", "").replace("**", "").split())
-        for fragment in fragments:
-            assert fragment in text, (rel, fragment)
-    for fragment in fragments:
-        assert fragment in policy
-    assert "any **Privatemode** model (pi provider \\`privatemode\\`, any model id)" in install
 
 
 async def test_calling_tools_in_process(server):

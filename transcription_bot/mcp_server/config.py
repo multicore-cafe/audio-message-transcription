@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ConfigError, TelegramSettings, _get, _number
+from .allowlist import AllowList, allowed_models_path, load_allowlist
 
 DEFAULT_PORT = 8790
 DEFAULT_SESSION = "telegram_mcp"
@@ -63,6 +64,8 @@ class McpSettings:
     dialog_cache_seconds: float
     flood_sleep_threshold: int
     auth_token: str | None
+    allowed_models_file: Path
+    allow_list: AllowList
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> McpSettings:
@@ -83,6 +86,9 @@ class McpSettings:
             )
         if len(auth_token) < MIN_TOKEN_LENGTH:
             raise ConfigError(f"the MCP bearer token must be at least {MIN_TOKEN_LENGTH} characters long")
+        # Fail closed: no allow-list file (or an empty/invalid one) stops the server here.
+        allowed_models_file = allowed_models_path(env)
+        allow_list = load_allowlist(allowed_models_file)
         settings = cls(
             telegram=telegram,
             host=_get(env, "MCP_HOST") or "127.0.0.1",
@@ -98,6 +104,8 @@ class McpSettings:
             dialog_cache_seconds=_number(env, "MCP_DIALOG_CACHE_SECONDS", 60, float),
             flood_sleep_threshold=_number(env, "MCP_FLOOD_SLEEP_THRESHOLD", 30),
             auth_token=auth_token,
+            allowed_models_file=allowed_models_file,
+            allow_list=allow_list,
         )
         if not 0 < settings.port < 65536:
             raise ConfigError(f"MCP_PORT must be a TCP port, got {settings.port}")

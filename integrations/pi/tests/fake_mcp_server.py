@@ -1,6 +1,6 @@
 """Run the real read-only MCP HTTP app against a fake Telegram account, for pi extension tests.
 
-Usage: uv run python integrations/pi/tests/fake_mcp_server.py <token-file>
+Usage: uv run python integrations/pi/tests/fake_mcp_server.py <token-file> [allowed-models-file]
 Prints `READY <port>` once it listens on 127.0.0.1. Never touches the real Telegram account.
 """
 
@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 import uvicorn  # noqa: E402
 
 from tests.mcp_fakes import FakeTelegramClient, basic_group, user  # noqa: E402
+from transcription_bot.mcp_server.allowlist import AllowList  # noqa: E402
 from transcription_bot.mcp_server.export import Exporter  # noqa: E402
 from transcription_bot.mcp_server.reader import TelegramReader  # noqa: E402
 from transcription_bot.mcp_server.server import build_server, http_app  # noqa: E402
@@ -32,6 +33,7 @@ def free_port() -> int:
 
 def main() -> None:
     token = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+    allow_list = AllowList.parse(Path(sys.argv[2]).read_text(encoding="utf-8"), source=sys.argv[2])
     client = FakeTelegramClient()
     alice = client.add_dialog(user(1, "Alice", username="alice"), unread=2)
     group = client.add_dialog(basic_group(10, "Family"))
@@ -39,7 +41,7 @@ def main() -> None:
         client.add_message(group, i, f"hello {i}", sender=alice)
     export_dir = Path(tempfile.mkdtemp(prefix="fake-mcp-exports-"))
     reader = TelegramReader(client)
-    app = http_app(build_server(reader, Exporter(reader, export_dir, export_dir)), auth_token=token)
+    app = http_app(build_server(reader, Exporter(reader, export_dir, export_dir), allow_list), auth_token=token)
 
     port = free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",

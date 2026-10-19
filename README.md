@@ -8,15 +8,15 @@ Bot and MCP server are separate Compose services with separate Telegram sessions
 ## Setup
 
 1. Get `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` at https://my.telegram.org and an `OPENAI_API_KEY`
-   (or point `OPENAI_BASE_URL` at a compatible endpoint), then:
+   (or point `OPENAI_BASE_URL` at any OpenAI-compatible endpoint, e.g. a self-hosted Whisper
+   server), then:
 
    ```sh
    cp .env.example .env    # fill in the values
    ```
 
-   `docker-compose.override.yml` (host-specific, git-ignored) joins the bot to the external
-   `whisper_default` network so the local Speaches server is reachable as
-   `OPENAI_BASE_URL=http://whisper-speaches:8000/v1`; see `.env.example` for the commented example.
+   To reach a container on an external Docker network, create a git-ignored
+   `docker-compose.override.yml` (see the commented example in `.env.example`).
 
 2. Log in once. The session and queue live in the `bot-data` volume:
 
@@ -53,7 +53,8 @@ It is **off by default**. Enable it with `.env` and the install script (token fi
 directory and the pi extension):
 
 ```sh
-./integrations/pi/install.sh         # creates ~/.config/telegram-mcp/token (0600) and the exports dir
+# repeat --allow for more entries (provider/model-id or provider/*)
+./integrations/pi/install.sh --allow <provider/model>
 echo 'TELEGRAM_MCP_ENABLED=1' >> .env
 docker compose run --rm mcp telegram-mcp login   # the server's own session, separate from the bot
 docker compose up -d                 # now also starts the mcp container
@@ -66,17 +67,19 @@ Only the value `1` enables it; absent/`0` keeps the service scaled to 0 and make
 
 ### Access policy
 
-- Allowed models: the local model **MiniCPM5-2B** (pi provider/model `minicpm/minicpm5-2b`) and
-  any **Privatemode** model (pi provider `privatemode`, any model id). The pi extension in
-  [`integrations/pi/`](integrations/pi/) activates its `telegram_*` tools only for those models and
-  re-checks the model before every call; every other model (Claude, GPT/Codex, DeepSeek, Gemini,
-  Kimi, MiMo, GLM or GPT via any non-privatemode provider, Qwen or any other cloud-hosted model)
-  must answer exactly:
-  **"I can't do this: access to Telegram data is restricted to the local model and Privatemode models."**
+- Which models may use the server is configured per installation in an allowed-models file
+  outside the repository: `~/.config/telegram-mcp/allowed-models` by default (override with
+  `TELEGRAM_MCP_ALLOWED_MODELS_FILE`; the container gets `MCP_ALLOWED_MODELS_FILE`). One entry
+  per line, `provider/model-id` (exact) or `provider/*` (any model of that provider); blank lines
+  and `#` comments are ignored. The file is not secret.
+- The pi extension in [`integrations/pi/`](integrations/pi/) activates its `telegram_*` tools only
+  for a listed provider/model and re-reads the file before every call. Every other model, and
+  any model at all when the file is missing or invalid, must answer exactly:
+  **"I can't do this: access to Telegram data is restricted to the models allowed by the owner."**
   The rules agents must follow are in [AGENTS.md](AGENTS.md).
-- Use it from a bb thread with provider `pi` and model `minicpm/minicpm5-2b` or any
-  `privatemode/*` model; the Telegram tools appear automatically. Other models never see them
-  (the `local` provider — `local/bonsai`, `local/k2h4b`, `local/minicpm2b` — is not allowed).
+- The system fails closed: without a valid file the pi tools stay inactive and the MCP server
+  exits 2. Create the list with `./integrations/pi/install.sh --allow <provider/model>`
+  (repeatable) or by editing the file.
 - The bearer token is a file outside the repository, `~/.config/telegram-mcp/token` (mode 0600),
   mounted into the container as a Docker secret; it is never stored in `.env`. Rotate it with:
   `openssl rand -hex 32 > ~/.config/telegram-mcp/token && docker compose restart mcp`.
@@ -93,6 +96,7 @@ uv sync
 uv run pytest
 DATA_DIR=data-dev uv run transcription-bot login && DATA_DIR=data-dev uv run transcription-bot
 TELEGRAM_MCP_ENABLED=1 DATA_DIR=data-dev uv run telegram-mcp   # local MCP server (exports to ./exports)
+# the local server reads the same allowed-models file (set TELEGRAM_MCP_ALLOWED_MODELS_FILE to override)
 ```
 
 Do not run a local bot while the Docker bot runs on the same account. Tests use fake Telegram

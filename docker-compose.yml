@@ -48,6 +48,8 @@ services:
       TELEGRAM_MCP_ENABLED: ${TELEGRAM_MCP_ENABLED:-0}
       # The bearer token comes from the secret below, never from .env.
       MCP_AUTH_TOKEN_FILE: /run/secrets/mcp_token
+      # Which models may use the server; without a valid list it refuses to start. Not secret.
+      MCP_ALLOWED_MODELS_FILE: /run/secrets/mcp_allowed_models
     ports:
       # Loopback only.
       - "127.0.0.1:${MCP_PORT:-8790}:8790"
@@ -61,6 +63,7 @@ services:
           create_host_path: false
     secrets:
       - mcp_token
+      - mcp_allowed_models
     stop_grace_period: 20s
     logging:
       driver: json-file
@@ -73,6 +76,10 @@ secrets:
   # The container runs as uid 1000, so a 0600 token file owned by the owner is readable.
   mcp_token:
     file: ${TELEGRAM_MCP_TOKEN_FILE:-${HOME}/.config/telegram-mcp/token}
+  # Not secret (0644 is fine), but mounted the same way. A missing host file makes Compose fail
+  # to start the service, which keeps the server fail-closed.
+  mcp_allowed_models:
+    file: ${TELEGRAM_MCP_ALLOWED_MODELS_FILE:-${HOME}/.config/telegram-mcp/allowed-models}
 
 volumes:
   bot-data:

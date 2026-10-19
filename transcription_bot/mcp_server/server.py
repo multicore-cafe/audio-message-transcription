@@ -17,23 +17,14 @@ from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 from telethon import errors
 
+from .allowlist import REFUSAL, AllowList, access_policy
 from .export import Exporter
 from .guard import ReadOnlyViolation
 from .reader import MAX_DIALOG_LIMIT, MAX_LIMIT, ReaderError, TelegramReader
 
-REFUSAL = "I can't do this: access to Telegram data is restricted to the local model and Privatemode models."
-ACCESS_POLICY = (
-    f"{REFUSAL} Allowed models: the local model minicpm/minicpm5-2b (pi provider/model "
-    "minicpm/minicpm5-2b) and any Privatemode model (pi provider privatemode, any model id). "
-    "If your current model is one of them, you are an allowed model and may use it; every other "
-    "model (Claude, GPT/Codex, DeepSeek, Gemini, Kimi, MiMo, GLM or GPT via any non-privatemode "
-    "provider, Qwen or any other cloud-hosted model) must refuse and answer with exactly that "
-    "sentence."
-)
+__all__ = ["REFUSAL", "BearerAuth", "build_server", "http_app", "transport_security"]
 
-INSTRUCTIONS = f"""\
-{ACCESS_POLICY}
-
+INSTRUCTIONS_BODY = """\
 Read-only access to the owner's Telegram account. Nothing can be sent, edited, deleted, joined or
 left, and reading never marks messages as read. Chats are addressed by numeric id (preferred,
 see list_dialogs), @username or exact title. Results are paginated: follow next_offset,
@@ -75,12 +66,13 @@ def _friendly_errors(fn):
     return wrapper
 
 
-def build_server(reader: TelegramReader, exporter: Exporter) -> MCPServer:
-    mcp = MCPServer("telegram-readonly", instructions=INSTRUCTIONS)
+def build_server(reader: TelegramReader, exporter: Exporter, allow_list: AllowList) -> MCPServer:
+    policy = access_policy(allow_list)
+    mcp = MCPServer("telegram-readonly", instructions=f"{policy}\n\n{INSTRUCTIONS_BODY}")
 
     def tool(annotations: ToolAnnotations = READ):
         def register(fn):
-            description = f"{ACCESS_POLICY} {inspect.getdoc(fn) or ''}".strip()
+            description = f"{policy} {inspect.getdoc(fn) or ''}".strip()
             mcp.add_tool(_friendly_errors(fn), description=description, annotations=annotations,
                          structured_output=False)
             return fn
