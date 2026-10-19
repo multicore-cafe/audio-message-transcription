@@ -1,7 +1,9 @@
 # Access rules: Telegram data is allow-list only
 
-This repository contains a read-only Telegram MCP server that reads the owner's private
-Telegram account. The rules below apply to every agent and every model.
+This repository contains a Telegram MCP server that reads the owner's private Telegram account.
+It is read-only except saving into the owner's own Saved Messages (the opt-in `send_to_saved` /
+`forward_to_saved` tools, `MCP_SAVED_MESSAGES_WRITE=1`). The rules below apply to every agent and
+every model.
 
 - Only the models listed in the allowed-models file may touch live Telegram data: call the MCP
   server, read `~/.config/telegram-mcp/token`, read the Telegram session volumes (`bot-data`,

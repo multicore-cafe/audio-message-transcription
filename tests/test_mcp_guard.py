@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from transcription_bot.mcp_server.export import Exporter
 from transcription_bot.mcp_server.guard import (
     LOGIN_REQUESTS,
     READ_ONLY_REQUESTS,
+    SAVED_MESSAGES_REQUESTS,
     WRAPPERS,
     GuardedMTProtoSender,
     ReadOnlyTelegramClient,
@@ -24,6 +26,7 @@ from transcription_bot.mcp_server.guard import (
     check_request,
 )
 from transcription_bot.mcp_server.reader import TelegramReader
+from transcription_bot.mcp_server.saved import SavedMessagesWriter
 
 PEER = types.InputPeerUser(1, 7)
 CHANNEL = types.InputChannel(50, 3)
@@ -191,10 +194,55 @@ def test_every_mutating_request_in_the_schema_is_rejected():
     assert accepted == []
 
 
+# MCP_SAVED_MESSAGES_WRITE=1 adds exactly these two conditional entries.
+WITH_SAVED = READ_ONLY_REQUESTS | SAVED_MESSAGES_REQUESTS
+
+
+def _filled(cls, peer):
+    """An instance of `cls` with every peer-like field set to `peer`, a plain text and one message id."""
+    names = [name for name in inspect.signature(cls.__init__).parameters if name != "self"]
+    request = cls.__new__(cls)
+    for name in names:
+        setattr(request, name, peer if "peer" in name else None)
+    values = {"message": "note", "id": [1], "random_id": [7] if "id" in names else 7}
+    for name, value in values.items():
+        if name in names:
+            setattr(request, name, value)
+    return request
+
+
+def _accepted(requests, allowed):
+    accepted = set()
+    for request in requests:
+        try:
+            check_request(request, allowed)
+        except ReadOnlyViolation:
+            continue
+        accepted.add(type(request))
+    return accepted
+
+
+def test_schema_scan_with_saved_messages_write_accepts_exactly_two_requests_into_self():
+    """The flag adds exactly two conditional writes, accepted only with the InputPeerSelf target."""
+    mutating = [cls for cls in _all_request_classes() if MUTATING.match(cls.__name__) and cls not in NOT_WRITES]
+    assert SAVED_MESSAGES_REQUESTS == {functions.messages.SendMessageRequest, functions.messages.ForwardMessagesRequest}
+    assert SAVED_MESSAGES_REQUESTS <= set(mutating)
+    # Half-built requests (no target at all) are rejected even with the flag.
+    assert _accepted([cls.__new__(cls) for cls in mutating], WITH_SAVED) == set()
+    to_self = [_filled(cls, types.InputPeerSelf()) for cls in mutating]
+    assert _accepted(to_self, READ_ONLY_REQUESTS) == set()
+    assert _accepted(to_self, WITH_SAVED) == SAVED_MESSAGES_REQUESTS
+    # Any other peer, the owner's own InputPeerUser included, is rejected.
+    for peer in (types.InputPeerUser(ME.id, ME.access_hash), PEER, types.InputPeerChat(10), CHANNEL_PEER,
+                 types.InputPeerEmpty(), types.InputPeerUserFromMessage(CHANNEL_PEER, 1, ME.id)):
+        assert _accepted([_filled(cls, peer) for cls in mutating], WITH_SAVED) == set(), peer
+
+
 def test_allow_list_contains_only_reads():
     for cls in READ_ONLY_REQUESTS - NOT_WRITES:
         assert re.match(r"^(Get|Search|Resolve|Ping)", cls.__name__), cls
     assert functions.messages.GetMessagesViewsRequest not in READ_ONLY_REQUESTS  # increments view counters
+    assert not READ_ONLY_REQUESTS & SAVED_MESSAGES_REQUESTS
 
 
 def test_notify_settings_are_read_but_never_changed():
@@ -413,3 +461,233 @@ async def test_every_tool_runs_through_the_real_client_within_the_allow_list(cli
     for request in recorder.sent:
         check_request(request)  # nothing slipped through
         assert isinstance(request, functions.InvokeWithoutUpdatesRequest)  # receive_updates=False
+
+
+# Opt-in writes into the own Saved Messages (MCP_SAVED_MESSAGES_WRITE=1).
+
+SELF = types.InputPeerSelf()
+
+
+def self_send(**extra):
+    return functions.messages.SendMessageRequest(SELF, "note", no_webpage=True, **extra)
+
+
+def self_forward(**extra):
+    return functions.messages.ForwardMessagesRequest(CHANNEL_PEER, [1, 2], SELF, **extra)
+
+
+def test_saved_messages_writes_need_the_flag():
+    for request in (self_send(), self_forward()):
+        with pytest.raises(ReadOnlyViolation):
+            check_request(request)
+        with pytest.raises(ReadOnlyViolation):
+            check_request(request, READ_ONLY_REQUESTS | LOGIN_REQUESTS)
+        check_request(request, WITH_SAVED)
+    # From any chat, including Saved Messages itself.
+    check_request(functions.messages.ForwardMessagesRequest(SELF, [1], SELF), WITH_SAVED)
+    check_request(functions.messages.ForwardMessagesRequest(PEER, [1], SELF), WITH_SAVED)
+    check_request(functions.messages.SendMessageRequest(SELF, "note"), WITH_SAVED)
+
+
+@pytest.mark.parametrize("request_", FORBIDDEN.values(), ids=FORBIDDEN.keys())
+def test_forbidden_requests_stay_rejected_with_the_flag(request_):
+    for wrapped in (request_, functions.InvokeWithoutUpdatesRequest(request_),
+                    functions.InvokeWithLayerRequest(LAYER, init_connection(request_)), [self_send(), request_]):
+        with pytest.raises(ReadOnlyViolation):
+            check_request(wrapped, WITH_SAVED)
+
+
+OTHER_PEERS = {
+    "own id as InputPeerUser": types.InputPeerUser(ME.id, ME.access_hash),
+    "user": PEER,
+    "basic group": types.InputPeerChat(10),
+    "channel": CHANNEL_PEER,
+    "empty": types.InputPeerEmpty(),
+    "user from message": types.InputPeerUserFromMessage(CHANNEL_PEER, 1, ME.id),
+    "channel from message": types.InputPeerChannelFromMessage(CHANNEL_PEER, 1, 51),
+}
+
+
+@pytest.mark.parametrize("peer", OTHER_PEERS.values(), ids=OTHER_PEERS.keys())
+def test_saved_messages_writes_to_any_other_peer_are_rejected(peer):
+    for request in (functions.messages.SendMessageRequest(peer, "note"),
+                    functions.messages.ForwardMessagesRequest(CHANNEL_PEER, [1], peer)):
+        with pytest.raises(ReadOnlyViolation, match="InputPeerSelf"):
+            check_request(request, WITH_SAVED)
+
+
+OPTIONS = {
+    "send_as": dict(send_as=CHANNEL_PEER),
+    "send_as self": dict(send_as=SELF),
+    "schedule_date": dict(schedule_date=datetime(2030, 1, 1, tzinfo=timezone.utc)),
+    "schedule_repeat_period": dict(schedule_repeat_period=86400),
+    "quick_reply_shortcut": dict(quick_reply_shortcut=types.InputQuickReplyShortcut("x")),
+    "effect": dict(effect=1),
+    "allow_paid_stars": dict(allow_paid_stars=1),
+    "allow_paid_floodskip": dict(allow_paid_floodskip=True),
+    "noforwards": dict(noforwards=True),
+    "silent": dict(silent=True),
+    "background": dict(background=True),
+    "reply_to another peer": dict(reply_to=types.InputReplyToMessage(1, reply_to_peer_id=PEER)),
+    "suggested_post": dict(suggested_post=types.SuggestedPost()),
+}
+SEND_ONLY = {
+    "reply_to": dict(reply_to=types.InputReplyToMessage(1)),
+    "entities": dict(entities=[types.MessageEntityBold(0, 4)]),
+    "reply_markup": dict(reply_markup=types.ReplyKeyboardHide()),
+    "clear_draft": dict(clear_draft=True),
+    "invert_media": dict(invert_media=True),
+    "update_stickersets_order": dict(update_stickersets_order=True),
+}
+FORWARD_ONLY = {
+    "top_msg_id": dict(top_msg_id=1),
+    "drop_author": dict(drop_author=True),
+    "drop_media_captions": dict(drop_media_captions=True),
+    "with_my_score": dict(with_my_score=True),
+    "video_timestamp": dict(video_timestamp=5),
+    "from_ephemeral": dict(from_ephemeral=True),
+}
+
+
+@pytest.mark.parametrize("make,extra", [(self_send, v) for v in {**OPTIONS, **SEND_ONLY}.values()]
+                         + [(self_forward, v) for v in {**OPTIONS, **FORWARD_ONLY}.values()],
+                         ids=[f"send {k}" for k in {**OPTIONS, **SEND_ONLY}]
+                         + [f"forward {k}" for k in {**OPTIONS, **FORWARD_ONLY}])
+def test_saved_messages_writes_with_options_are_rejected(make, extra):
+    with pytest.raises(ReadOnlyViolation, match="only plain delivery"):
+        check_request(make(**extra), WITH_SAVED)
+
+
+@pytest.mark.parametrize("make", [self_send, self_forward])
+def test_every_other_field_must_be_unset(make):
+    """Generic: any field outside the permitted few, set to anything, is rejected (future fields too)."""
+    permitted = {"peer", "message", "random_id", "no_webpage", "from_peer", "id", "to_peer"}
+    fields = [f for f in inspect.signature(type(make()).__init__).parameters if f not in permitted | {"self"}]
+    assert len(fields) >= 15
+    for field in fields:
+        request = make()
+        setattr(request, field, object())
+        with pytest.raises(ReadOnlyViolation, match=field):
+            check_request(request, WITH_SAVED)
+
+
+def test_malformed_saved_messages_writes_are_rejected():
+    bad = [
+        functions.messages.SendMessageRequest(SELF, ""),
+        functions.messages.SendMessageRequest(SELF, None),
+        functions.messages.ForwardMessagesRequest(types.InputPeerEmpty(), [1], SELF),
+        functions.messages.ForwardMessagesRequest(CHANNEL, [1], SELF),  # not an InputPeer
+        functions.messages.ForwardMessagesRequest(CHANNEL_PEER, [], SELF),
+        functions.messages.ForwardMessagesRequest(CHANNEL_PEER, [1, 2], SELF, random_id=[1]),
+        functions.messages.ForwardMessagesRequest(CHANNEL_PEER, ["1"], SELF, random_id=[1]),
+    ]
+    for request in bad:
+        with pytest.raises(ReadOnlyViolation):
+            check_request(request, WITH_SAVED)
+
+
+def test_saved_messages_writes_in_wrappers_and_batches():
+    for request in (self_send(), self_forward()):
+        check_request(functions.InvokeWithoutUpdatesRequest(request), WITH_SAVED)
+        check_request(functions.InvokeWithLayerRequest(LAYER, init_connection(request)), WITH_SAVED)
+        check_request([request, functions.updates.GetStateRequest()], WITH_SAVED)
+        for wrapper in (functions.InvokeWithTakeoutRequest(1, request), functions.InvokeAfterMsgRequest(1, request)):
+            with pytest.raises(ReadOnlyViolation):
+                check_request(wrapper, WITH_SAVED)
+        with pytest.raises(ReadOnlyViolation):
+            check_request(functions.InvokeWithoutUpdatesRequest(request))  # flag off
+    # One bad item rejects the whole batch.
+    for batch in ([self_send(), functions.messages.SendMessageRequest(PEER, "x")],
+                  [self_forward(), self_send(send_as=CHANNEL_PEER)],
+                  [[functions.InvokeWithoutUpdatesRequest(self_forward())], FORBIDDEN["messages.ReadHistory"]]):
+        with pytest.raises(ReadOnlyViolation):
+            check_request(batch, WITH_SAVED)
+
+
+def saved_answer(request):
+    if isinstance(request, functions.messages.SendMessageRequest):
+        return types.UpdateShortSentMessage(out=True, id=501, pts=1, pts_count=1,
+                                            date=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    if isinstance(request, functions.messages.ForwardMessagesRequest):
+        date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        updates = []
+        for i, random_id in enumerate(request.random_id):
+            copy = types.Message(id=600 + i, peer_id=types.PeerUser(ME.id), date=date, message="post", out=True,
+                                 fwd_from=types.MessageFwdHeader(date=date, from_id=types.PeerChannel(50)))
+            updates += [types.UpdateMessageID(id=600 + i, random_id=random_id),
+                        types.UpdateNewMessage(copy, pts=1, pts_count=1)]
+        return types.Updates(updates=updates, users=[ME], chats=[NEWS], date=date, seq=0)
+    if isinstance(request, functions.channels.GetMessagesRequest):
+        messages = [types.Message(id=i.id, peer_id=types.PeerChannel(50), date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                                  message=f"post {i.id}") for i in request.id]
+        return types.messages.ChannelMessages(pts=1, count=len(messages), messages=messages, topics=[],
+                                              chats=[NEWS], users=[])
+    return empty_answer(request)
+
+
+@pytest.fixture
+def saved_client(recorder):
+    recorder.answer = saved_answer
+    return ReadOnlyTelegramClient(None, 1, "hash", receive_updates=False, allowed=WITH_SAVED)
+
+
+async def test_telethon_high_level_saved_messages_methods_issue_only_the_allowed_requests(saved_client, recorder):
+    """What Telethon really sends for send_message("me") / forward_messages("me") (reviewed for 1.45)."""
+    sent = await saved_client.send_message("me", "plain **text**", parse_mode=None, link_preview=False)
+    assert sent.id == 501
+    forwarded = await saved_client.forward_messages("me", [3, 4], from_peer=CHANNEL_PEER)
+    assert [m.id for m in forwarded] == [600, 601]
+    kinds = recorder.kinds()
+    # `_get_peer` of the self target may ask for the own user (a read); nothing else is sent.
+    assert [k for k in kinds if k != "GetUsersRequest"] == ["SendMessageRequest", "ForwardMessagesRequest"]
+    for request in recorder.sent:
+        check_request(request, WITH_SAVED)
+        assert type(request.query) is not functions.InvokeWithLayerRequest
+    send = recorder.sent[kinds.index("SendMessageRequest")].query
+    assert isinstance(send.peer, types.InputPeerSelf) and send.entities in (None, [])
+
+
+async def test_telethon_high_level_writes_elsewhere_or_with_options_are_blocked(saved_client, recorder):
+    attempts = [
+        saved_client.send_message(PEER, "x"),
+        saved_client.send_message("me", "**markdown** creates entities"),
+        saved_client.send_message("me", "x", schedule=datetime(2030, 1, 1, tzinfo=timezone.utc)),
+        saved_client.send_message("me", "x", send_as=CHANNEL_PEER),
+        saved_client.send_message("me", "x", silent=True),
+        saved_client.send_message("me", "x", reply_to=5),
+        saved_client.forward_messages(PEER, [1], from_peer=CHANNEL_PEER),
+        saved_client.forward_messages("me", [1], from_peer=CHANNEL_PEER, schedule=datetime(2030, 1, 1, tzinfo=timezone.utc)),
+        saved_client.forward_messages("me", [1], from_peer=CHANNEL_PEER, drop_author=True),
+        saved_client.edit_message("me", 1, "edited"),
+        saved_client.delete_messages("me", [1]),
+        saved_client.send_read_acknowledge("me"),
+    ]
+    for attempt in attempts:
+        with pytest.raises(ReadOnlyViolation):
+            await attempt
+    assert [k for k in recorder.kinds() if k != "GetUsersRequest"] == []
+
+
+async def test_saved_messages_methods_are_blocked_without_the_flag(client, recorder):
+    with pytest.raises(ReadOnlyViolation):
+        await client.send_message("me", "x", parse_mode=None)
+    with pytest.raises(ReadOnlyViolation):
+        await client.forward_messages("me", [1], from_peer=CHANNEL_PEER)
+    assert [k for k in recorder.kinds() if k != "GetUsersRequest"] == []
+
+
+async def test_saved_messages_writer_runs_through_the_real_client_within_the_guard(saved_client, recorder):
+    writer = SavedMessagesWriter(TelegramReader(saved_client))
+    assert await writer.send_to_saved("a" * 5000) == {"message_ids": [501, 501]}
+    result = await writer.forward_to_saved("@news", [3, 4])
+    assert result == {"message_ids": [600, 601]}
+    kinds = recorder.kinds()
+    assert kinds.count("SendMessageRequest") == 2 and kinds.count("ForwardMessagesRequest") == 1
+    assert set(kinds) <= {"SendMessageRequest", "ForwardMessagesRequest", "GetDialogsRequest",
+                          "ResolveUsernameRequest", "GetMessagesRequest", "GetNotifySettingsRequest"}
+    for request in recorder.sent:
+        check_request(request, WITH_SAVED)
+        assert isinstance(request, functions.InvokeWithoutUpdatesRequest)
+    forward = [r.query for r in recorder.sent if isinstance(r.query, functions.messages.ForwardMessagesRequest)][0]
+    assert isinstance(forward.to_peer, types.InputPeerSelf)
+    assert isinstance(forward.from_peer, types.InputPeerChannel) and forward.id == [3, 4]

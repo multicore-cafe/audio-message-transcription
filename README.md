@@ -48,6 +48,9 @@ topics; chat info; read/get/search messages per chat and globally; export a chat
 results to files. It can never
 send, edit, delete, join or leave, and reading never marks anything as read. Every outgoing API
 request is checked against a read-only allow-list (`transcription_bot/mcp_server/guard.py`).
+The only exception is opt-in: with `MCP_SAVED_MESSAGES_WRITE=1` in `.env` two more tools,
+`send_to_saved` (a plain-text note) and `forward_to_saved` (forward messages of a chat), save
+into the owner's own Saved Messages and nowhere else (at most 20 writes per minute).
 
 It is **off by default**. Enable it with `.env` and the install script (token file, export
 directory and the pi extension):

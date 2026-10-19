@@ -1,7 +1,8 @@
 """An in-memory Telegram account for the MCP server tests, built from real Telethon TL objects.
 
-`FakeTelegramClient` implements only the read methods the reader uses. Every raw request goes
-through the read-only guard first, so the tests also prove the tools stay within the allow-list.
+`FakeTelegramClient` implements only the read methods the reader uses, plus the two Saved
+Messages writes. Every raw request goes through the read-only guard first (with `allowed`, the
+read-only list by default), so the tests also prove the tools stay within the allow-list.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from telethon import errors, types, utils
 from telethon._updates import EntityCache as MbEntityCache
 from telethon.tl.custom import Dialog
 
-from transcription_bot.mcp_server.guard import check_request
+from transcription_bot.mcp_server.guard import READ_ONLY_REQUESTS, check_request
 
 ME_ID = 1000
 BASE_DATE = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -59,6 +60,9 @@ class FakeTelegramClient:
         self.topics: dict[int, list[types.ForumTopic]] = {}
         self.full: dict[int, object] = {}
         self.requests: list = []
+        self.allowed = READ_ONLY_REQUESTS
+        # Raised once by the next request of that type name, e.g. {"ForwardMessagesRequest": exc}.
+        self.fail: dict[str, Exception] = {}
         self.dialog_loads = 0
         # Default notification settings per scope ("InputNotifyUsers", "InputNotifyChats", "InputNotifyBroadcasts").
         self.notify_defaults: dict[str, types.PeerNotifySettings] = {}
@@ -169,8 +173,10 @@ class FakeTelegramClient:
     # Raw requests
 
     async def __call__(self, request):
-        check_request(request)
+        check_request(request, self.allowed)
         self.requests.append(request)
+        if type(request).__name__ in self.fail:
+            raise self.fail.pop(type(request).__name__)
         handler = getattr(self, "_" + type(request).__name__, None)
         if handler is None:
             raise AssertionError(f"unexpected request {type(request).__name__}")
@@ -255,3 +261,30 @@ class FakeTelegramClient:
             count=len(found), messages=page, topics=[], chats=chats, users=users,
             next_rate=int(page[-1].date.timestamp()) if page else None,
         )
+
+    # Saved Messages writes (the guard has already checked the target is InputPeerSelf)
+
+    def saved(self) -> list[types.Message]:
+        return self.messages.get(ME_ID, [])
+
+    def _next_saved_id(self) -> int:
+        return max((m.id for m in self.saved()), default=0) + 1
+
+    def _SendMessageRequest(self, request):
+        message = self.add_message(self.me, self._next_saved_id(), request.message, sender=self.me)
+        return types.UpdateShortSentMessage(out=True, id=message.id, pts=1, pts_count=1, date=message.date)
+
+    def _ForwardMessagesRequest(self, request):
+        source = ME_ID if isinstance(request.from_peer, types.InputPeerSelf) else utils.get_peer_id(request.from_peer)
+        by_id = {m.id: m for m in self.messages.get(source, [])}
+        updates = []
+        for old_id, random_id in zip(request.id, request.random_id):
+            if old_id not in by_id:
+                continue  # Telegram silently skips ids it cannot find
+            original = by_id[old_id]
+            copy = self.add_message(self.me, self._next_saved_id(), original.message, sender=self.me,
+                                    fwd_from=types.MessageFwdHeader(date=original.date, from_id=original.from_id))
+            updates += [types.UpdateMessageID(id=copy.id, random_id=random_id),
+                        types.UpdateNewMessage(message=copy, pts=1, pts_count=1)]
+        users, chats = self._everyone()
+        return types.Updates(updates=updates, users=users, chats=chats, date=BASE_DATE, seq=0)

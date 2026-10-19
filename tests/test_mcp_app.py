@@ -167,7 +167,7 @@ async def test_serve_with_revoked_session_explains_how_to_log_in(tmp_path, caplo
             self.disconnected = True
 
     fake = Unauthorized()
-    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram: fake)
+    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram, **_: fake)
     caplog.set_level(logging.ERROR)
     assert await mcp_app.serve(settings(tmp_path)) == EXIT_CONFIG
     assert fake.connected and fake.disconnected
@@ -219,7 +219,7 @@ async def wait_for_server(port):
 async def test_serve_runs_http_until_sigterm(tmp_path, monkeypatch):
     fake = AuthorizedClient()
     fake.add_dialog(user(1, "Alice"))
-    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram: fake)
+    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram, **_: fake)
     port = free_port()
     task = asyncio.create_task(mcp_app.serve(dataclasses.replace(settings(tmp_path), port=port)))
     response = await wait_for_server(port)
@@ -237,7 +237,7 @@ async def test_serve_runs_http_until_sigterm(tmp_path, monkeypatch):
 
 async def test_serve_exits_when_telegram_is_gone_for_good(tmp_path, monkeypatch, caplog):
     fake = AuthorizedClient()
-    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram: fake)
+    monkeypatch.setattr(mcp_app, "create_readonly_client", lambda telegram, **_: fake)
     port = free_port()
     task = asyncio.create_task(mcp_app.serve(dataclasses.replace(settings(tmp_path), port=port)))
     await wait_for_server(port)

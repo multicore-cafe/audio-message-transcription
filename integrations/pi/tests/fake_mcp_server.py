@@ -2,6 +2,8 @@
 
 Usage: uv run python integrations/pi/tests/fake_mcp_server.py <token-file> [allowed-models-file]
 Prints `READY <port>` once it listens on 127.0.0.1. Never touches the real Telegram account.
+With MCP_SAVED_MESSAGES_WRITE=1 it also offers send_to_saved / forward_to_saved, writing into the
+fake account's Saved Messages.
 """
 
 from __future__ import annotations
@@ -20,8 +22,11 @@ import uvicorn  # noqa: E402
 
 from tests.mcp_fakes import FakeTelegramClient, basic_group, user  # noqa: E402
 from transcription_bot.mcp_server.allowlist import AllowList  # noqa: E402
+from transcription_bot.mcp_server.config import saved_messages_write_enabled  # noqa: E402
 from transcription_bot.mcp_server.export import Exporter  # noqa: E402
+from transcription_bot.mcp_server.guard import SAVED_MESSAGES_REQUESTS  # noqa: E402
 from transcription_bot.mcp_server.reader import TelegramReader  # noqa: E402
+from transcription_bot.mcp_server.saved import SavedMessagesWriter  # noqa: E402
 from transcription_bot.mcp_server.server import build_server, http_app  # noqa: E402
 
 
@@ -41,7 +46,12 @@ def main() -> None:
         client.add_message(group, i, f"hello {i}", sender=alice)
     export_dir = Path(tempfile.mkdtemp(prefix="fake-mcp-exports-"))
     reader = TelegramReader(client)
-    app = http_app(build_server(reader, Exporter(reader, export_dir, export_dir), allow_list), auth_token=token)
+    writer = None
+    if saved_messages_write_enabled():
+        client.allowed = client.allowed | SAVED_MESSAGES_REQUESTS
+        writer = SavedMessagesWriter(reader)
+    app = http_app(build_server(reader, Exporter(reader, export_dir, export_dir), allow_list, writer),
+                   auth_token=token)
 
     port = free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",

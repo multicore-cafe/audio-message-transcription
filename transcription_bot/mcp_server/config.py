@@ -34,6 +34,12 @@ def mcp_enabled(env: Mapping[str, str] | None = None) -> bool:
     return _get(env, "TELEGRAM_MCP_ENABLED") == "1"
 
 
+def saved_messages_write_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Writing into the own Saved Messages is off by default; only the exact value `1` enables it."""
+    env = os.environ if env is None else env
+    return _get(env, "MCP_SAVED_MESSAGES_WRITE") == "1"
+
+
 def _secret(env: Mapping[str, str], name: str) -> str | None:
     """Read a secret from `<name>_FILE` (preferred, used by Docker secrets) or from the variable itself."""
     path = _get(env, f"{name}_FILE")
@@ -66,6 +72,8 @@ class McpSettings:
     auth_token: str | None
     allowed_models_file: Path
     allow_list: AllowList
+    # Opt-in: the send_to_saved / forward_to_saved tools and their two conditional guard entries.
+    saved_messages_write: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> McpSettings:
@@ -106,6 +114,7 @@ class McpSettings:
             auth_token=auth_token,
             allowed_models_file=allowed_models_file,
             allow_list=allow_list,
+            saved_messages_write=saved_messages_write_enabled(env),
         )
         if not 0 < settings.port < 65536:
             raise ConfigError(f"MCP_PORT must be a TCP port, got {settings.port}")

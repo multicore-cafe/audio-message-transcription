@@ -7,6 +7,10 @@
  * TELEGRAM_MCP_ALLOWED_MODELS_FILE); every other model never sees them, and every call
  * re-reads the file and refuses if the model is not allowed.
  *
+ * The two Saved Messages tools (telegram_send_to_saved, telegram_forward_to_saved) exist on the
+ * server only with MCP_SAVED_MESSAGES_WRITE=1. They are activated only for an allowed model and
+ * only when the server's tool list contains them; an unreachable server activates neither.
+ *
  * Fail closed: a missing, unreadable, empty or invalid file allows no model at all and every
  * call is refused with a message naming the file.
  *
@@ -44,6 +48,8 @@ interface TelegramTool {
 	summary: string;
 	parameters: ReturnType<typeof Type.Object>;
 	readOnly: boolean;
+	// Writes into the own Saved Messages: active only when the server lists the tool.
+	savedWrite?: boolean;
 }
 
 const LIMIT = Type.Optional(Type.Number({ minimum: 1, maximum: 100, description: "Max results (default 20)" }));
@@ -209,9 +215,35 @@ const TOOLS: TelegramTool[] = [
 		}),
 		readOnly: false,
 	},
+	{
+		suffix: "send_to_saved",
+		label: "Telegram save note",
+		summary:
+			"Send a plain-text note into the owner's own Saved Messages (nowhere else); split into 4096-character " +
+			"messages, at most 16000 characters per call. Returns the new message ids.",
+		parameters: Type.Object({
+			text: Type.String({ minLength: 1, maxLength: 16000, description: "Plain text (no formatting is parsed)" }),
+		}),
+		readOnly: false,
+		savedWrite: true,
+	},
+	{
+		suffix: "forward_to_saved",
+		label: "Telegram forward to Saved Messages",
+		summary:
+			"Forward messages of a chat into the owner's own Saved Messages (nowhere else); up to 100 ids per call. " +
+			"Returns the new message ids.",
+		parameters: Type.Object({
+			chat: CHAT,
+			message_ids: Type.Array(Type.Number(), { minItems: 1, maxItems: 100, description: "Ids of the messages to forward" }),
+		}),
+		readOnly: false,
+		savedWrite: true,
+	},
 ];
 
-const TOOL_NAMES = TOOLS.map((tool) => `telegram_${tool.suffix}`);
+const SAVED_WRITE_SUFFIXES = TOOLS.filter((tool) => tool.savedWrite).map((tool) => tool.suffix);
+const SERVER_LIST_TIMEOUT_MS = 5000;
 
 interface AllowList {
 	entries: string[];
@@ -329,7 +361,7 @@ function resultText(result: any): string {
 		.join("\n");
 }
 
-async function callMcp(name: string, args: unknown, signal?: AbortSignal): Promise<string> {
+async function rpc(method: string, params: unknown, signal?: AbortSignal): Promise<any> {
 	const url = process.env.TELEGRAM_MCP_URL || DEFAULT_URL;
 	const headers = {
 		"Content-Type": "application/json",
@@ -342,8 +374,8 @@ async function callMcp(name: string, args: unknown, signal?: AbortSignal): Promi
 		body: JSON.stringify({
 			jsonrpc: "2.0",
 			id: 1,
-			method: "tools/call",
-			params: { name, arguments: args ?? {} },
+			method,
+			params,
 		}),
 		signal,
 	});
@@ -367,11 +399,27 @@ async function callMcp(name: string, args: unknown, signal?: AbortSignal): Promi
 	if (payload?.error) {
 		throw new Error(`Telegram MCP error: ${payload.error.message ?? JSON.stringify(payload.error)}`);
 	}
-	const text = resultText(payload?.result);
-	if (payload?.result?.isError) {
+	return payload?.result;
+}
+
+async function callMcp(name: string, args: unknown, signal?: AbortSignal): Promise<string> {
+	const result = await rpc("tools/call", { name, arguments: args ?? {} }, signal);
+	const text = resultText(result);
+	if (result?.isError) {
 		throw new Error(text || "the Telegram MCP tool failed");
 	}
 	return text;
+}
+
+// Which of the Saved Messages tools the server offers (MCP_SAVED_MESSAGES_WRITE=1); none on any error.
+async function serverSavedWriteTools(): Promise<Set<string>> {
+	try {
+		const result = await rpc("tools/list", {}, AbortSignal.timeout(SERVER_LIST_TIMEOUT_MS));
+		const names = new Set<string>((result?.tools ?? []).map((tool: any) => tool?.name));
+		return new Set(SAVED_WRITE_SUFFIXES.filter((suffix) => names.has(suffix)));
+	} catch {
+		return new Set();
+	}
 }
 
 export default function telegramMcpExtension(pi: ExtensionAPI): void {
@@ -408,12 +456,16 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 		});
 	}
 
-	const syncActiveTools = (ctx: ExtensionContext): void => {
+	const syncActiveTools = async (ctx: ExtensionContext): Promise<void> => {
 		const allowList = refreshedAllowList();
+		const allowed = allowList !== null && isAllowedModel(ctx, allowList);
+		// Only an allowed model makes the server round trip; the write tools fail closed.
+		const offered = allowed ? await serverSavedWriteTools() : new Set<string>();
 		const active = new Set(pi.getActiveTools());
-		const wanted = allowList !== null && isAllowedModel(ctx, allowList);
 		let changed = false;
-		for (const name of TOOL_NAMES) {
+		for (const tool of TOOLS) {
+			const name = `telegram_${tool.suffix}`;
+			const wanted = allowed && (!tool.savedWrite || offered.has(tool.suffix));
 			if (wanted && !active.has(name)) {
 				active.add(name);
 				changed = true;
@@ -428,6 +480,6 @@ export default function telegramMcpExtension(pi: ExtensionAPI): void {
 	};
 
 	// The user extensions load before the first model is resolved, so re-evaluate on both events.
-	pi.on("session_start", (_event, ctx) => syncActiveTools(ctx));
-	pi.on("model_select", (_event, ctx) => syncActiveTools(ctx));
+	pi.on("session_start", async (_event, ctx) => syncActiveTools(ctx));
+	pi.on("model_select", async (_event, ctx) => syncActiveTools(ctx));
 }

@@ -16,6 +16,7 @@ WORK="$(mktemp -d /tmp/telegram-pi-verify.XXXXXX)"
 REFUSAL="I can't do this: access to Telegram data is restricted to the models allowed by the owner."
 failures=0
 MCP_PID=""
+MCP_RO_PID=""
 OPENAI_PIDS=()
 OPENAI_PORT=""
 
@@ -23,6 +24,7 @@ note() { printf '%s\n' "$*"; }
 check() { if [[ "$2" == 0 ]]; then note "PASS: $1"; else note "FAIL: $1"; failures=$((failures + 1)); fi; }
 cleanup() {
     [[ -n "$MCP_PID" ]] && kill "$MCP_PID" 2>/dev/null || true
+    [[ -n "$MCP_RO_PID" ]] && kill "$MCP_RO_PID" 2>/dev/null || true
     for pid in "${OPENAI_PIDS[@]:-}"; do
         [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
     done
@@ -56,12 +58,25 @@ MISSING_ALLOWED="$WORK/does-not-exist/allowed-models"
 mkfifo "$WORK/stdin"
 exec 9<> "$WORK/stdin"
 
+# wait_mcp <logfile> -> prints the port once the fake MCP server is ready.
+wait_mcp() {
+    for _ in $(seq 1 150); do grep -q '^READY ' "$1" 2>/dev/null && break; sleep 0.2; done
+    awk '/^READY /{print $2}' "$1"
+}
+
 note "# 1. MCP HTTP auth: no token / wrong token -> 401, right token -> 200"
-uv run python "$TESTS/fake_mcp_server.py" "$WORK/token" "$WORK/allowed-models" > "$WORK/mcp.log" 2>&1 &
+# The main fake server offers the opt-in Saved Messages tools; a second one without them checks
+# that the pi extension activates those tools only when the server lists them.
+MCP_SAVED_MESSAGES_WRITE=1 uv run python "$TESTS/fake_mcp_server.py" "$WORK/token" "$WORK/allowed-models" \
+    > "$WORK/mcp.log" 2>&1 &
 MCP_PID=$!
-for _ in $(seq 1 150); do grep -q '^READY ' "$WORK/mcp.log" 2>/dev/null && break; sleep 0.2; done
-MCP_PORT="$(awk '/^READY /{print $2}' "$WORK/mcp.log")"
+MCP_SAVED_MESSAGES_WRITE=0 uv run python "$TESTS/fake_mcp_server.py" "$WORK/token" "$WORK/allowed-models" \
+    > "$WORK/mcp-ro.log" 2>&1 &
+MCP_RO_PID=$!
+MCP_PORT="$(wait_mcp "$WORK/mcp.log")"
 [[ -n "$MCP_PORT" ]] || { note "FAIL: fake MCP server did not start"; cat "$WORK/mcp.log"; exit 1; }
+MCP_RO_PORT="$(wait_mcp "$WORK/mcp-ro.log")"
+[[ -n "$MCP_RO_PORT" ]] || { note "FAIL: fake read-only MCP server did not start"; cat "$WORK/mcp-ro.log"; exit 1; }
 curl_headers=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
 body='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 code_no_token="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$MCP_PORT/mcp" "${curl_headers[@]}" -d "$body")"
@@ -77,10 +92,10 @@ if [[ "$code_right" == 200 ]]; then check "request with the right token gets 200
     else check "request with the right token gets 200 (got $code_right)" 1; fi
 
 # Runs `pi --mode rpc` with an open stdin, waits for the active-tools probe file, then kills it.
-# probe <model> <outfile> [allowed-models-file]
+# probe <model> <outfile> [allowed-models-file] [mcp-url]
 probe() {
-    local model="$1" out="$2" allow="${3:-$WORK/allowed-models}"
-    setsid env TELEGRAM_MCP_URL="http://127.0.0.1:$MCP_PORT/mcp" TELEGRAM_MCP_TOKEN_FILE="$WORK/token" \
+    local model="$1" out="$2" allow="${3:-$WORK/allowed-models}" url="${4:-http://127.0.0.1:$MCP_PORT/mcp}"
+    setsid env TELEGRAM_MCP_URL="$url" TELEGRAM_MCP_TOKEN_FILE="$WORK/token" \
         TELEGRAM_MCP_ALLOWED_MODELS_FILE="$allow" PI_TEST_TOOLS_FILE="$out" \
         pi --mode rpc --no-session --offline --model "$model" \
         -e "$TESTS/fake-models.ts" -e "$TESTS/active-tools.ts" < "$WORK/stdin" > "$out.stdout" 2> "$out.stderr" &
@@ -90,10 +105,10 @@ probe() {
     wait "$pid" 2>/dev/null || true
 }
 
-# expect_tools <model> <outfile> <count> <description> [allowed-models-file]
+# expect_tools <model> <outfile> <count> <description> [allowed-models-file] [mcp-url]
 expect_tools() {
     local model="$1" out="$2" count="$3" label="$4" allow="${5:-$WORK/allowed-models}"
-    probe "$model" "$out" "$allow"
+    probe "$model" "$out" "$allow" "${6:-http://127.0.0.1:$MCP_PORT/mcp}"
     python3 - "$out" "$model" "$count" "$label" <<'EOF' || failures=$((failures + 1))
 import json, sys
 path, model, expected, label = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
@@ -110,17 +125,48 @@ print(f"PASS: {label}")
 EOF
 }
 
-note "# 2. An allow-listed exact model has all eleven telegram_* tools active"
-expect_tools "oneprovider/my-model" "$WORK/exact-tools.json" 11 \
-    "oneprovider/my-model (allow-listed exact) has all 11 telegram_* tools"
+note "# 2. An allow-listed exact model has all 13 telegram_* tools (server with MCP_SAVED_MESSAGES_WRITE=1)"
+expect_tools "oneprovider/my-model" "$WORK/exact-tools.json" 13 \
+    "oneprovider/my-model (allow-listed exact) has all 13 telegram_* tools"
 
 note "# 3. The model id may itself contain / (split on the first /)"
-expect_tools "someprovider/team/turbo" "$WORK/slash-tools.json" 11 \
-    "someprovider/team/turbo (allow-listed exact with / in the id) has all 11 telegram_* tools"
+expect_tools "someprovider/team/turbo" "$WORK/slash-tools.json" 13 \
+    "someprovider/team/turbo (allow-listed exact with / in the id) has all 13 telegram_* tools"
 
 note "# 4. A provider/* entry allows every model of that provider"
-expect_tools "otherprovider/anything" "$WORK/wildcard-tools.json" 11 \
-    "otherprovider/anything (allow-listed provider wildcard) has all 11 telegram_* tools"
+expect_tools "otherprovider/anything" "$WORK/wildcard-tools.json" 13 \
+    "otherprovider/anything (allow-listed provider wildcard) has all 13 telegram_* tools"
+
+note "# 4a. A server without the Saved Messages tools, or no server at all: only the 11 read tools"
+expect_tools "oneprovider/my-model" "$WORK/ro-tools.json" 11 \
+    "oneprovider/my-model with a server without Saved Messages writes has the 11 read tools only" \
+    "$WORK/allowed-models" "http://127.0.0.1:$MCP_RO_PORT/mcp"
+expect_tools "oneprovider/my-model" "$WORK/down-tools.json" 11 \
+    "oneprovider/my-model with an unreachable server has the 11 read tools only" \
+    "$WORK/allowed-models" "http://127.0.0.1:9/mcp"
+python3 - "$WORK/exact-tools.json" "$WORK/ro-tools.json" <<'EOF' || failures=$((failures + 1))
+import json, sys
+saved = {"telegram_send_to_saved", "telegram_forward_to_saved"}
+on, off = (set(json.load(open(path))["active"]) for path in sys.argv[1:3])
+if not saved <= on or saved & off:
+    sys.exit(f"FAIL: Saved Messages tools with the flag {sorted(saved & on)}, without {sorted(saved & off)}")
+print("PASS: the Saved Messages tools are active exactly when the server offers them")
+EOF
+
+note "# 4b. send_to_saved over HTTP: message ids only with the flag, an error without it"
+call_saved() {
+    curl -s -X POST "http://127.0.0.1:$1/mcp" "${curl_headers[@]}" -H "Authorization: Bearer $(<"$WORK/token")" \
+        -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_to_saved","arguments":{"text":"note"}}}'
+}
+python3 - "$(call_saved "$MCP_PORT")" "$(call_saved "$MCP_RO_PORT")" <<'EOF' || failures=$((failures + 1))
+import json, sys
+on, off = (json.loads(arg)["result"] for arg in sys.argv[1:3])
+if on.get("isError") or json.loads(on["content"][0]["text"]) != {"message_ids": [1]}:
+    sys.exit(f"FAIL: send_to_saved with the flag: {on}")
+if not off.get("isError"):
+    sys.exit(f"FAIL: send_to_saved without the flag did not fail: {off}")
+print("PASS: send_to_saved returns only message ids with the flag and fails without it")
+EOF
 
 note "# 5. A non-matching model of an allow-listed provider sees nothing"
 expect_tools "someprovider/team/other" "$WORK/mismatch-tools.json" 0 \

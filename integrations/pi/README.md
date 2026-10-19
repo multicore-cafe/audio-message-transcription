@@ -1,7 +1,9 @@
 # pi integration: Telegram MCP tools for allow-listed models only
 
 `index.ts` is a pi extension that exposes the read-only Telegram MCP server as eleven `telegram_*`
-tools. It is the only client that gets the bearer token, and it works only for the models listed
+tools, plus `telegram_send_to_saved` and `telegram_forward_to_saved` when the server offers them
+(`MCP_SAVED_MESSAGES_WRITE=1`; they write only into the owner's own Saved Messages and are
+activated only if the server's tool list contains them). It is the only client that gets the bearer token, and it works only for the models listed
 in the allowed-models file (default `~/.config/telegram-mcp/allowed-models`, override with
 `TELEGRAM_MCP_ALLOWED_MODELS_FILE`):
 
@@ -55,8 +57,9 @@ VERIFY_REAL_MODEL=<provider>/<model> integrations/pi/tests/verify.sh
 ```
 
 Runs the MCP HTTP app against a fake Telegram account and a fake OpenAI-compatible server:
-401 without the token, all eleven tools active for an allow-listed exact model, an allow-listed
-model id containing `/` and an allow-listed `provider/*`, no `telegram_*` tools for a
+401 without the token, all 13 tools active for an allow-listed exact model, an allow-listed
+model id containing `/` and an allow-listed `provider/*` (the fake server has the Saved Messages
+tools), only the 11 read tools with a server without them or no server, no `telegram_*` tools for a
 non-matching model, an unlisted provider or a missing allow-list file, and execution-time
 refusal for a non-allowed model. The final real-model call runs only when `VERIFY_REAL_MODEL` is
 set; it uses that one local model and the fake MCP backend. No cloud model and no real Telegram

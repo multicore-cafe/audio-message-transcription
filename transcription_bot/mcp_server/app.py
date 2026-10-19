@@ -18,8 +18,9 @@ from ..telegram import STARTUP_TIMEOUT, check_connection, connect_authorized, cr
 from ..watchdog import Watchdog
 from .config import DISABLED_MESSAGE, McpSettings, mcp_enabled
 from .export import Exporter
-from .guard import LOGIN_REQUESTS, READ_ONLY_REQUESTS, ReadOnlyTelegramClient
+from .guard import LOGIN_REQUESTS, READ_ONLY_REQUESTS, SAVED_MESSAGES_REQUESTS, ReadOnlyTelegramClient
 from .reader import TelegramReader
+from .saved import SavedMessagesWriter
 from .server import build_server, http_app
 
 log = logging.getLogger(__name__)
@@ -35,8 +36,15 @@ def login_hint(settings: TelegramSettings) -> str:
     )
 
 
-def create_readonly_client(settings: TelegramSettings, *, allow_login: bool = False) -> ReadOnlyTelegramClient:
-    allowed = READ_ONLY_REQUESTS | LOGIN_REQUESTS if allow_login else READ_ONLY_REQUESTS
+def create_readonly_client(
+    settings: TelegramSettings, *, allow_login: bool = False, saved_messages_write: bool = False
+) -> ReadOnlyTelegramClient:
+    allowed = READ_ONLY_REQUESTS
+    if allow_login:
+        allowed |= LOGIN_REQUESTS
+    if saved_messages_write:
+        # Conditional entries: the guard still accepts them only into the own Saved Messages.
+        allowed |= SAVED_MESSAGES_REQUESTS
     return create_client(settings, receive_updates=False, client_class=ReadOnlyTelegramClient, allowed=allowed)
 
 
@@ -55,7 +63,7 @@ async def serve(settings: McpSettings) -> int:
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(session_lock(settings.telegram))
-            client = create_readonly_client(settings.telegram)
+            client = create_readonly_client(settings.telegram, saved_messages_write=settings.saved_messages_write)
         except (FatalError, OSError, sqlite3.Error) as exc:
             return report_file_error(exc, settings.telegram.session_path.parent)
         return await _serve(settings, client)
@@ -87,9 +95,12 @@ async def _serve(settings: McpSettings, client: ReadOnlyTelegramClient) -> int:
         return EXIT_FAILURE
     log.info("logged in as %s (id %s); read-only MCP server on http://%s:%d/mcp",
              me.username or me.first_name, me.id, settings.host, settings.port)
+    writer = SavedMessagesWriter(reader) if settings.saved_messages_write else None
+    if writer:
+        log.info("MCP_SAVED_MESSAGES_WRITE=1: send_to_saved and forward_to_saved may write into Saved Messages")
 
     # McpSettings.from_env refuses to start without a token, so auth_token is always set here.
-    app = http_app(build_server(reader, exporter, settings.allow_list), allowed_hosts=settings.allowed_hosts,
+    app = http_app(build_server(reader, exporter, settings.allow_list, writer), allowed_hosts=settings.allowed_hosts,
                    allowed_origins=settings.allowed_origins, auth_token=settings.auth_token)
     server = _Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info",
                                     access_log=False, lifespan="on"))
