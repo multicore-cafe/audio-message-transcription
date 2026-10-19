@@ -43,6 +43,6 @@ integrations/pi/tests/verify.sh
 ```
 
 Runs the MCP HTTP app against a fake Telegram account and a fake OpenAI-compatible server:
-401 without the token, all ten tools active for `minicpm/minicpm5-2b`, no `telegram_*` tools for a
+401 without the token, all eleven tools active for `minicpm/minicpm5-2b`, no `telegram_*` tools for a
 cloud model, execution refused for a non-local model, and one real local MiniCPM5-2B call that
 uses `telegram_list_dialogs`. No cloud model and no real Telegram account are involved.

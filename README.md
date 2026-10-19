@@ -43,8 +43,9 @@ Bot and MCP server are separate Compose services with separate Telegram sessions
 
 ## Read-only Telegram MCP server
 
-The optional `mcp` service has 10 read tools: list folders, folder chats, dialogs and forum
-topics; chat info; read/get/search messages per chat and globally; export a chat. It can never
+The optional `mcp` service has 11 read tools: list folders, folder chats, dialogs and forum
+topics; chat info; read/get/search messages per chat and globally; export a chat or search
+results to files. It can never
 send, edit, delete, join or leave, and reading never marks anything as read. Every outgoing API
 request is checked against a read-only allow-list (`transcription_bot/mcp_server/guard.py`).
 

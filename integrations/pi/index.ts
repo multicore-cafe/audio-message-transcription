@@ -188,6 +188,26 @@ const TOOLS: TelegramTool[] = [
 		}),
 		readOnly: false,
 	},
+	{
+		suffix: "export_search",
+		label: "Telegram export search",
+		summary: "Search and export the matches to JSON/Markdown files; returns host paths and a resume value, not messages.",
+		parameters: Type.Object({
+			chat: Type.Optional(CHAT),
+			query: Type.Optional(Type.String({ description: "Text to search; may be empty when other filters are set" })),
+			sender: Type.Optional(Type.Union([Type.String(), Type.Number()], { description: "Only messages from this user (needs chat)" })),
+			since: SINCE,
+			until: UNTIL,
+			media: MEDIA,
+			topic_id: Type.Optional(Type.Number({ description: "Search inside one forum topic (needs chat)" })),
+			chat_type: Type.Optional(Type.Union([Type.Literal("user"), Type.Literal("group"), Type.Literal("channel")])),
+			format: Type.Optional(Type.Union([Type.Literal("json"), Type.Literal("markdown"), Type.Literal("both")])),
+			include_media: Type.Optional(Type.Boolean({ description: "Also download media files into the export folder" })),
+			max_messages: Type.Optional(Type.Number({ minimum: 1, description: "Default 1000" })),
+			resume: Type.Optional(Type.String({ description: "resume of a partial export: pass it alone to write the next part" })),
+		}),
+		readOnly: false,
+	},
 ];
 
 const TOOL_NAMES = TOOLS.map((tool) => `telegram_${tool.suffix}`);

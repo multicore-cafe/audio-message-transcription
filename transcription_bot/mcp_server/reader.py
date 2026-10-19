@@ -75,6 +75,17 @@ def _entity_map(result) -> dict[int, Any]:
     return {utils.get_peer_id(x): x for x in itertools.chain(result.users, result.chats)}
 
 
+def global_cursor(result, last, *, use_rate: bool = True) -> str:
+    """The search_global continuation cursor after the message `last` of a SearchGlobal page.
+
+    `use_rate` prefers the response's `next_rate` (position right after the whole returned page);
+    it must be False when the page was cut short and `last` is not its final message.
+    """
+    rate = getattr(result, "next_rate", None) if use_rate else None
+    stamp = rate if rate is not None else int(last.date.timestamp())
+    return f"{stamp}:{utils.get_peer_id(last.peer_id)}:{last.id}"
+
+
 # Default notification settings of each chat type; a chat without its own setting follows them.
 NOTIFY_SCOPES = {"user": types.InputNotifyUsers, "group": types.InputNotifyChats,
                  "channel": types.InputNotifyBroadcasts}
@@ -499,7 +510,7 @@ class TelegramReader:
             raise ReaderError(f"media must be one of {', '.join(MEDIA_FILTERS)}")
         return MEDIA_FILTERS[media]()
 
-    async def search_messages(
+    async def search_chat_page(
         self,
         chat: str | int,
         *,
@@ -511,8 +522,12 @@ class TelegramReader:
         topic_id: int | None = None,
         limit: int | None = 20,
         offset_id: int = 0,
-        max_text: int | None = MAX_TEXT,
-    ) -> dict[str, Any]:
+    ) -> tuple[Any, Any, list]:
+        """One server-side page of chat search, shared by search_messages and export_search.
+
+        Returns (entity, raw response, messages): MessageEmpty entries are dropped and, with a
+        sender filter, non-matching senders as well (Telegram ignores from_id in private chats).
+        """
         entity = await self.resolve(chat)
         from_entity = await self.resolve(sender) if sender not in (None, "") else None
         limit = clamp(limit, 20, MAX_LIMIT)
@@ -536,6 +551,26 @@ class TelegramReader:
             # Telegram ignores from_id in private chats, so check it here as well.
             wanted = utils.get_peer_id(from_entity)
             messages = [m for m in messages if m.sender_id == wanted]
+        return entity, result, messages
+
+    async def search_messages(
+        self,
+        chat: str | int,
+        *,
+        query: str = "",
+        sender: str | int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        media: str | None = None,
+        topic_id: int | None = None,
+        limit: int | None = 20,
+        offset_id: int = 0,
+        max_text: int | None = MAX_TEXT,
+    ) -> dict[str, Any]:
+        entity, result, messages = await self.search_chat_page(
+            chat, query=query, sender=sender, since=since, until=until, media=media, topic_id=topic_id,
+            limit=limit, offset_id=offset_id)
+        limit = clamp(limit, 20, MAX_LIMIT)
         items, cut = self._collect(messages, limit, clamp(max_text, MAX_TEXT, MAX_TEXT * 16), _entity_map(result))
         more = cut or len(result.messages) >= limit
         # Continue after the last message Telegram returned, even if the sender filter dropped it.
@@ -552,7 +587,7 @@ class TelegramReader:
             "truncated_by_size": cut,
         }
 
-    async def search_global(
+    async def search_global_page(
         self,
         query: str,
         *,
@@ -562,8 +597,12 @@ class TelegramReader:
         chat_type: str | None = None,
         limit: int | None = 20,
         cursor: str | None = None,
-        max_text: int | None = MAX_TEXT,
-    ) -> dict[str, Any]:
+    ) -> tuple[Any, list]:
+        """One server-side page of global search, shared by search_global and export_search.
+
+        Returns (raw response, messages): MessageEmpty entries are dropped; the rest stays in
+        the order Telegram returned it.
+        """
         if not (query or "").strip() and media is None:
             raise ReaderError("global search needs a query or a media filter")
         only = {None: {}, "user": {"users_only": True}, "group": {"groups_only": True},
@@ -593,17 +632,31 @@ class TelegramReader:
             limit=limit,
             **only[chat_type],
         ))
-        entities = _entity_map(result)
         messages = [m for m in result.messages if not isinstance(m, types.MessageEmpty)]
+        return result, messages
+
+    async def search_global(
+        self,
+        query: str,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        media: str | None = None,
+        chat_type: str | None = None,
+        limit: int | None = 20,
+        cursor: str | None = None,
+        max_text: int | None = MAX_TEXT,
+    ) -> dict[str, Any]:
+        result, messages = await self.search_global_page(query, since=since, until=until, media=media,
+                                                         chat_type=chat_type, limit=limit, cursor=cursor)
+        limit = clamp(limit, 20, MAX_LIMIT)
+        entities = _entity_map(result)
         items, cut = self._collect(messages, limit, clamp(max_text, MAX_TEXT, MAX_TEXT * 16), entities)
         for item in items:
             item["chat"] = entity_ref(entities.get(item["chat_id"])) or {"id": item["chat_id"]}
         next_cursor = None
         if items and (cut or len(result.messages) >= limit):
-            last = messages[len(items) - 1]
-            rate = getattr(result, "next_rate", None) if not cut else None
-            next_cursor = f"{rate if rate is not None else int(last.date.timestamp())}:" \
-                          f"{utils.get_peer_id(last.peer_id)}:{last.id}"
+            next_cursor = global_cursor(result, messages[len(items) - 1], use_rate=not cut)
         return {
             "total": getattr(result, "count", len(result.messages)),
             "messages": items,

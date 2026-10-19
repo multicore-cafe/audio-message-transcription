@@ -74,7 +74,7 @@ try:
 except FileNotFoundError:
     sys.exit("FAIL: the probe wrote no tools file (extension not loaded?)")
 telegram = [t for t in data["active"] if t.startswith("telegram_")]
-expected = 10
+expected = 11
 if data["model"] != "minicpm/minicpm5-2b" or len(telegram) != expected:
     sys.exit(f"FAIL: local model active tools {data}")
 print(f"PASS: minicpm/minicpm5-2b has all {expected} telegram_* tools active")

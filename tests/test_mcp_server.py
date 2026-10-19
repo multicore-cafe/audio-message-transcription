@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -15,7 +16,7 @@ from transcription_bot.mcp_server.server import ACCESS_POLICY, REFUSAL, build_se
 
 TOOLS = {
     "list_folders", "list_folder_chats", "list_dialogs", "get_chat_info", "list_forum_topics", "read_messages",
-    "get_messages", "search_messages", "search_global", "export_chat",
+    "get_messages", "search_messages", "search_global", "export_chat", "export_search",
 }
 
 
@@ -45,7 +46,8 @@ async def test_tools_are_listed_with_read_only_annotations(server):
         assert tool.description.startswith(ACCESS_POLICY)
         assert REFUSAL in tool.description
         assert tool.annotations.destructive_hint is False
-        assert tool.annotations.read_only_hint is (name != "export_chat")  # export writes local files only
+        # The exports write local files only, so they are not read-only tools.
+        assert tool.annotations.read_only_hint is (name not in ("export_chat", "export_search"))
     schema = tools["read_messages"].input_schema
     assert schema["required"] == ["chat"]
     assert schema["properties"]["limit"]["maximum"] == 100
@@ -68,6 +70,16 @@ async def test_calling_tools_in_process(server):
         assert missing.is_error and "no chat with the title 'Nobody'" in missing.content[0].text
         too_many = await mcp.call_tool("read_messages", {"chat": "Family", "limit": 5000})
         assert too_many.is_error
+
+
+async def test_export_search_tool_returns_paths_not_messages(server):
+    async with Client(server) as mcp:
+        result = payload(await mcp.call_tool("export_search", {"query": "hello"}))
+        assert result["message_count"] == 5 and result["chats_count"] == 1
+        assert result["truncated"] is False and result["resume"] is None
+        assert "messages" not in result and "hello 3" not in json.dumps(result)
+        assert set(result["files"]) == {"json", "markdown"}
+        assert Path(result["directory"]).name.startswith("search_")
 
 
 @contextlib.asynccontextmanager
